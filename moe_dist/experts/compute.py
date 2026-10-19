@@ -8,8 +8,9 @@ Transformers' "eager" expert loop (identical for Granite, Qwen1.5-MoE and Qwen3-
         rows = linear(act(gate) * up, down_proj[e]) * top_k_weights[token_idx, top_k_pos]
         out.index_add_(0, token_idx, rows)                         # add into the token's answer
 
-`run_experts` does the first three lines for the experts one node holds. What it returns depends
-on the combine mode:
+`plan_pairs` turns the router's picks into a work list of (token, expert, weight) pairs in that
+same order; `run_pairs` does the first three lines for one node's part of the list (this is what
+a worker runs); `run_experts` does both in one step. What comes back depends on the combine mode:
 
 - exact: the weighted rows for every (token, expert) pair, not yet added up. The master adds the
   rows of all nodes in ascending expert order (`combine_exact`), which is the same order as
@@ -57,6 +58,66 @@ class FastResult:
     sums: torch.Tensor  # (T, H)
 
 
+@dataclass
+class Pairs:
+    """The work list: one entry per (token, expert) pair, in Transformers' order.
+
+    Sorted by expert number; inside one expert, by choice rank (1st choice, 2nd choice, ...) and
+    then by row. This is exactly the order of `torch.where(expert_mask[e])` in Transformers.
+    """
+
+    row: torch.Tensor  # (n,) long, row number in hidden_states
+    expert: torch.Tensor  # (n,) long, global expert number
+    weight: torch.Tensor  # (n,) router weight, same dtype as hidden_states
+
+    def select(self, keep: torch.Tensor) -> "Pairs":
+        """A subset (keep = positions, ascending), still in the same order."""
+        return Pairs(self.row[keep], self.expert[keep], self.weight[keep])
+
+
+def plan_pairs(top_k_index: torch.Tensor, top_k_weights: torch.Tensor) -> Pairs:
+    """Router picks (T, k) -> the work list for all experts, in Transformers' order."""
+    num_tokens = top_k_index.shape[0]
+    # Position p = rank * T + row, the row-major order of Transformers' (k, T) mask.
+    flat_expert = top_k_index.T.reshape(-1)
+    order = torch.sort(flat_expert, stable=True).indices  # stable: keeps p ascending per expert
+    row, rank = order % num_tokens, order // num_tokens
+    return Pairs(row=row, expert=flat_expert[order], weight=top_k_weights[row, rank])
+
+
+def run_pairs(part: ExpertSlice, act_fn, hidden_states: torch.Tensor, pairs: Pairs, mode: str = EXACT):
+    """Run a work list on this node's experts. This is what a worker does for one request.
+
+    hidden_states (R, H) holds the rows the pairs point to. In exact mode the result rows are in
+    the same order as `pairs`.
+    """
+    if mode not in MODES:
+        raise ValueError(f"unknown combine mode {mode!r}; use one of {MODES}")
+    if pairs.expert.numel() and (pairs.expert[1:] < pairs.expert[:-1]).any():
+        raise ValueError("pairs must be sorted by expert number")
+    local_of = part.local_index[pairs.expert]
+    if (local_of < 0).any():
+        missing = sorted(set(pairs.expert[local_of < 0].tolist()))
+        raise ValueError(f"experts {missing} are not on this node (it holds {part.expert_ids})")
+
+    hit_ids, counts, token_parts, row_parts = [], [], [], []
+    experts, sizes = torch.unique_consecutive(pairs.expert, return_counts=True)
+    start = 0
+    with torch.no_grad():
+        for e, n in zip(experts.tolist(), sizes.tolist()):
+            local = part.local_index[e].item()
+            token_idx = pairs.row[start : start + n]
+            gate, up = nn.functional.linear(hidden_states[token_idx], part.gate_up_proj[local]).chunk(2, dim=-1)
+            rows = nn.functional.linear(act_fn(gate) * up, part.down_proj[local])
+            rows = rows * pairs.weight[start : start + n, None]
+            hit_ids.append(e)
+            counts.append(n)
+            token_parts.append(token_idx)
+            row_parts.append(rows.to(hidden_states.dtype))
+            start += n
+    return _result(hidden_states, hit_ids, counts, token_parts, row_parts, mode)
+
+
 def run_experts(
     part: ExpertSlice,
     act_fn,
@@ -70,23 +131,12 @@ def run_experts(
     hidden_states (T, H); top_k_index (T, k) global expert numbers; top_k_weights (T, k).
     Picks of experts this node does not hold are ignored (another node computes them).
     """
-    if mode not in MODES:
-        raise ValueError(f"unknown combine mode {mode!r}; use one of {MODES}")
-    hit_ids, counts, token_parts, row_parts = [], [], [], []
-    with torch.no_grad():
-        for local, e in enumerate(part.expert_ids):
-            # (k, T) mask, the same layout as Transformers' expert_mask[e].
-            top_k_pos, token_idx = torch.where((top_k_index == e).T)
-            if token_idx.numel() == 0:
-                continue
-            gate, up = nn.functional.linear(hidden_states[token_idx], part.gate_up_proj[local]).chunk(2, dim=-1)
-            rows = nn.functional.linear(act_fn(gate) * up, part.down_proj[local])
-            rows = rows * top_k_weights[token_idx, top_k_pos, None]
-            hit_ids.append(e)
-            counts.append(token_idx.numel())
-            token_parts.append(token_idx)
-            row_parts.append(rows.to(hidden_states.dtype))
+    pairs = plan_pairs(top_k_index, top_k_weights)
+    mine = (part.local_index[pairs.expert] >= 0).nonzero().squeeze(1)
+    return run_pairs(part, act_fn, hidden_states, pairs.select(mine), mode)
 
+
+def _result(hidden_states, hit_ids, counts, token_parts, row_parts, mode):
     if mode == FAST:
         sums = torch.zeros_like(hidden_states)
         for token_idx, rows in zip(token_parts, row_parts):

@@ -12,7 +12,17 @@ from transformers.models.granitemoe.modeling_granitemoe import GraniteMoeExperts
 from transformers.models.qwen2_moe.modeling_qwen2_moe import Qwen2MoeExperts
 from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeExperts
 
-from moe_dist.experts.compute import EXACT, FAST, ExactResult, combine_exact, combine_fast, run_experts
+from moe_dist.experts.compute import (
+    EXACT,
+    FAST,
+    ExactResult,
+    Pairs,
+    combine_exact,
+    combine_fast,
+    plan_pairs,
+    run_experts,
+    run_pairs,
+)
 from moe_dist.experts.slicing import slice_experts
 from moe_dist.models.catalog import DEFAULT_MODEL, pinned_revision
 from moe_dist.reference import build_inputs, load_reference
@@ -166,6 +176,32 @@ def test_empty_exact_result_type():
     r = run_experts(part, module.act_fn, hidden, idx, weights, EXACT)
     assert isinstance(r, ExactResult)
     assert r.rows.dtype == torch.bfloat16
+
+
+def test_plan_pairs_follows_transformers_order():
+    """Inside one expert: by choice rank first (as in Transformers' torch.where), not by row."""
+    idx = torch.tensor([[3, 7], [7, 3], [3, 1]])  # row 1 picked expert 3 as its 2nd choice
+    weights = torch.tensor([[0.6, 0.4], [0.7, 0.3], [0.9, 0.1]])
+    pairs = plan_pairs(idx, weights)
+    assert pairs.expert.tolist() == [1, 3, 3, 3, 7, 7]
+    assert pairs.row.tolist() == [2, 0, 2, 1, 1, 0]
+    assert pairs.weight.tolist() == pytest.approx([0.1, 0.6, 0.9, 0.3, 0.7, 0.4])
+    # The same order Transformers' loop uses:
+    for e in [1, 3, 7]:
+        _, token_idx = torch.where(torch.nn.functional.one_hot(idx, 32).permute(2, 1, 0)[e])
+        assert pairs.row[pairs.expert == e].tolist() == token_idx.tolist()
+
+
+def test_run_pairs_refuses_bad_work_lists():
+    module, top_k = make_experts("granite", "fp32")
+    hidden = torch.randn(2, 1024)
+    part = slice_experts(module.gate_up_proj.data, module.down_proj.data, [3, 7])
+    unsorted = Pairs(torch.tensor([0, 1]), torch.tensor([7, 3]), torch.ones(2))
+    with pytest.raises(ValueError, match="sorted"):
+        run_pairs(part, module.act_fn, hidden, unsorted)
+    foreign = Pairs(torch.tensor([0, 1]), torch.tensor([3, 9]), torch.ones(2))
+    with pytest.raises(ValueError, match=r"experts \[9\] are not on this node"):
+        run_pairs(part, module.act_fn, hidden, foreign)
 
 
 # --- With the real model: real weights and real inputs captured during a forward pass ---

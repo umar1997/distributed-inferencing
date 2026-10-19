@@ -82,6 +82,28 @@ def greedy_generate(model, tokenizer, messages: list[dict], max_new_tokens: int)
     }
 
 
+# Matching rule (docs/IMPLEMENTATION.md, Phase 1.3): when tiny number differences are allowed,
+# the first different token must be at a near-tie, where the reference's two best scores are
+# this close. On one machine in exact mode no difference is allowed at all.
+NEAR_TIE = {"fp32": 0.01, "bf16": 0.1}
+
+
+def match_reference(saved: dict, tokens: list[int], max_gap: float) -> tuple[str, int | None]:
+    """Compare generated tokens with a golden prompt entry.
+
+    Returns ("identical", None), ("near-tie", i) or ("different", i), where i is the first
+    position that differs. "near-tie" means the reference's top-2 gap at i was <= max_gap, so a
+    tiny rounding difference may honestly have flipped the choice.
+    """
+    expected = saved["output_tokens"]
+    for i, (want, got) in enumerate(zip(expected, tokens)):
+        if want != got:
+            return ("near-tie" if saved["steps"][i]["gap"] <= max_gap else "different"), i
+    if len(expected) != len(tokens):  # one stopped early (end-of-text token) where the other did not
+        return "different", min(len(expected), len(tokens))
+    return "identical", None
+
+
 def environment_info() -> dict:
     return {
         "python": platform.python_version(),

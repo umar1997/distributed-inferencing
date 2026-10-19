@@ -231,7 +231,7 @@ The JSON header names each tensor with its type, shape and position. Tensors are
    {"name": "weight",   "dtype": "bf16",  "shape": [3]}]}
 ```
 - `hidden`: only the tokens that need at least one of this worker's experts (one row per token).
-- `row`, `expert`, `weight`: one entry per (token, expert) pair this worker must run: which row of `hidden`, which **global** expert number, and the router's weight for it. Lists are sorted by expert number, then row (the same order Transformers uses).
+- `row`, `expert`, `weight`: one entry per (token, expert) pair this worker must run: which row of `hidden`, which **global** expert number, and the router's weight for it. Lists are sorted by expert number; inside one expert, by choice rank (all tokens that picked it as their 1st choice, then 2nd choice, …) and then by row. This is exactly the order Transformers uses (`torch.where` on its expert mask); it matters because a different batch of rows can round differently (Phase 1.2). `hidden` keeps the batch order.
 
 **Forward response** header: `{"node_id": "worker-1", "compute_ms": 4.1, "experts_run": [3, 7]}` plus one tensor:
 - `COMBINE_MODE=exact`: `out` has **one row per (token, expert) pair**, already multiplied by its weight. The master adds them up **in exactly the order Transformers does** (expert 0, 1, 2, …). Additions in a computer give tiny different results in a different order, so this keeps the output **bit-for-bit identical** on one machine. Cost: up to 8 rows per token instead of 1 (16 KB instead of 2 KB for one Granite token), which is still small.
@@ -384,6 +384,25 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 **Done when:** all equivalence tests pass, and tokens/second for "plain Transformers" vs "our dispatcher, in one program" is recorded (to show how much our code costs).
 
 **Risks:** Transformers might call the experts in a different way than expected in some code paths (e.g. a faster special kernel on some machines). Make sure "eager" is forced, and have a test that fails if any `experts` module was not replaced.
+
+**Results (done 2026-10-19, 36 GB Mac):**
+- Built: `experts/placement.py` (`parse_expert_ids` reads `0-10` / `0,4,8` / `none`; `Placement` = layer → expert → node(s); coverage check), `experts/dispatcher.py` (`ExpertDispatcher`, `LocalNode`, `serve_forward` = what a worker does with one message, `request_scope` = the per-request context variable), `transport/codec.py` (binary message format), `master/model_loader.py` (`build_local_cluster`: placement check → nodes read their experts from the file → full model → swap in dispatchers → check none was missed), `scripts/benchmark.py`, and `match_reference` + `NEAR_TIE` in `reference.py` (the matching rule).
+- `compute.py` now works on a **work list of (token, expert, weight) pairs** (`plan_pairs`, `run_pairs`), which is exactly what a worker message carries (section 4.2). Virtual nodes now and real workers in Phase 2 run the same `serve_forward`.
+- **Correction to section 4.2:** the work list inside one expert is ordered by choice rank first, then row (Transformers' order), not by row. Fixed above.
+- **`exact` mode gives identical tokens to the golden files**, fp32 and bf16, for 4 placements: three ranges (`0-9 / 10-20 / 21-31`, all 10 prompts), interleaved (`0,3,6,…`), everything on one node, one expert per node (32 nodes) (first 4 prompts each, 9–64 tokens).
+- Every expert call goes through the binary format (pack → node → pack → unpack), so the format is tested on ~33,000 real messages per run. Every message carries `request_id`, `token_index` (0 = the prompt, then 1, 2, …) and `layer`.
+- Missing expert 17 → refused before anything is loaded: "missing experts: [17] in all layers". A test fails if any `experts` module is left unreplaced or any expert weights remain in the model.
+- **Speed** (10 golden prompts, ~460 tokens, warm):
+
+  | | fp32 | bf16 |
+  |---|---|---|
+  | Plain Transformers | 17.8 tok/s | 18.6 tok/s |
+  | Dispatcher, 3 virtual nodes, `exact` | 15.1 tok/s (−15%) | 16.5 tok/s (−11%) |
+  | Dispatcher, `fast` | – | 15.3 tok/s |
+
+  Our code costs 11–15%. Most of the time is still the expert maths itself; packing/unpacking messages is ~7%. Data per run in bf16 `exact`: 129 MB sent, 325 MB received (exact sends back up to 8 rows per token); `fast`: 129 MB / 123 MB.
+- **Finding: `fast` mode in bf16 does not meet the matching rule.** fp32 `fast`: scores unchanged (to 4 decimals), all tokens identical. bf16 `fast`: the first-step scores already move by **0.25–0.69** (bf16 scores here come in steps of 0.0625), so tokens flip at gaps far larger than the 0.1 "near-tie" limit (2 of 10 prompts: gaps 0.75 and 0.125). In bf16, a different addition order changes the text now and then. The test is kept as an expected failure (`xfail`) so this stays visible. **Consequences:** keep `exact` as the default; in Phase 4.3 only use `fast` with fp32, or accept that bf16 + `fast` gives slightly different (still sensible) text. **For Phase 4 (ARM vs x86):** bf16 may well show the same size of differences between CPU types, so the cross-machine check should be done in fp32 first.
+- Tests: 168 pass + 1 expected failure (137 fast ones without the model in ~13 s; everything in ~4 min, mostly `test_equivalence.py`).
 
 ---
 

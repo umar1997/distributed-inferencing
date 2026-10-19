@@ -8,6 +8,7 @@ files. It turns them into the common in-memory layout (Transformers' packed `gat
 from abc import ABC, abstractmethod
 
 import torch
+from transformers.activations import ACT2FN
 
 
 class ModelAdapter(ABC):
@@ -23,6 +24,10 @@ class ModelAdapter(ABC):
     @abstractmethod
     def num_experts(self) -> int:
         """Experts per MoE layer."""
+
+    def act_fn(self):
+        """The experts' activation function (SiLU for Granite and Qwen), as Transformers builds it."""
+        return ACT2FN[self.config.hidden_act]
 
     @abstractmethod
     def moe_layers(self) -> list[int]:
