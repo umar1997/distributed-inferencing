@@ -345,6 +345,17 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 
 **Done when:** tests pass for Granite's shapes. (The test is written for any shapes, so Qwen reuses it.)
 
+**Results (done 2026-10-19, 36 GB Mac):**
+- Built: `experts/compute.py` (`run_experts`, `combine_exact`, `combine_fast`, `ExactResult`, `FastResult`) and `tests/test_compute.py`.
+- **Granite, Qwen1.5-MoE and Qwen3-MoE use the identical expert loop** in Transformers 5.20.1, so one `compute.py` serves all three. The tests use Transformers' own experts classes as the reference (forced to "eager"), so a future change in Transformers shows up as a failing test.
+- **`exact` mode is bit-identical** to Transformers for Granite (full size), Qwen1.5 (60 experts, top-4) and Qwen3 (128 experts, top-8; both with smaller matrices to stay fast), in fp32 and bf16, for 1, 9 and 300 tokens, and for 4 placements (three ranges, interleaved `0,3,6,…`, one node, one expert per node). Also bit-identical on **real Granite weights and real inputs** caught during generation (layers 0, 5, 11, 17, 23; the prompt plus 2 new tokens).
+- **Finding: the batch of rows matters.** In fp32, multiplying one row alone gives slightly different bits (up to 3e-6) than multiplying the same row inside a batch, because the maths library uses a different method for a single row. So every expert must see exactly the rows Transformers would give it. Sending a node only the rows it needs is fine **as long as they keep their order** (tested; this is what Phase 1.3 will do).
+- **Order of addition matters too:** adding the experts in reverse order changes the result (3e-8 in fp32, 0.002 in bf16). That is why `exact` mode adds in ascending expert order on the master.
+- **`fast` mode** (each node adds up its own experts first): largest difference 3e-8 in fp32 and 0.003 in bf16 (values up to ~0.22). Identical when one node holds everything.
+- **Thread count does not change the results** on this Mac (1, 4, 6 and 12 threads gave the same bits). Good news for Docker containers with different CPU limits; to re-check on Laptop A/C's CPUs in Phase 4.
+- `combine_exact` refuses if two nodes send the same expert (each expert must be computed exactly once).
+- Tests: 70 pass in total (50 fast ones without the model in ~13 s; all in ~41 s).
+
 #### Phase 1.3 — The dispatcher, with "virtual nodes" in one program
 
 **Goal:** replace every MoE layer's `experts` with our dispatcher, split the experts between 3 pretend nodes inside one program, and get the same tokens as plain Transformers.
