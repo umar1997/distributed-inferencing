@@ -1,0 +1,16 @@
+[
+  {"id": "capital", "messages": [{"role": "user", "content": "What is the capital of France? Answer in one sentence."}]},
+  {"id": "explain", "messages": [{"role": "user", "content": "Explain in simple words what a Mixture-of-Experts language model is."}]},
+  {"id": "list", "messages": [{"role": "user", "content": "List five fruits that are red."}]},
+  {"id": "code", "messages": [{"role": "user", "content": "Write a Python function that checks whether a number is prime."}]},
+  {"id": "math", "messages": [{"role": "user", "content": "A train travels 120 km in 1.5 hours. What is its average speed in km per hour? Show your steps."}]},
+  {"id": "story", "messages": [{"role": "user", "content": "Write the opening two sentences of a short story about a robot who learns to paint."}]},
+  {"id": "german", "messages": [{"role": "user", "content": "Übersetze ins Englische: Das Wetter ist heute sehr schön."}]},
+  {"id": "json", "messages": [{"role": "user", "content": "Give me a JSON object with the fields name, age and city for a made-up person."}]},
+  {"id": "multi_turn", "messages": [
+    {"role": "user", "content": "My name is Sam and I like hiking."},
+    {"role": "assistant", "content": "Nice to meet you, Sam! Hiking is a great way to enjoy nature."},
+    {"role": "user", "content": "Suggest three things I should pack for a day hike."}
+  ]},
+  {"id": "long_prompt", "messages": [{"role": "user", "content": "Here is a short text. Read it and then summarise it in two sentences.\n\nThe city library opened a new reading room last month. It has large windows, comfortable chairs and a quiet area for students. On weekends it hosts free workshops on topics like photography, cooking and basic programming. Since the opening, the number of visitors has almost doubled, and the library is now planning to extend its opening hours in the evening so that people who work during the day can also use it."}]}
+]

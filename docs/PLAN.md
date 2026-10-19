@@ -225,7 +225,6 @@ When I send a prompt, I want to watch the work move across nodes in `docker logs
 - List which ports need to be open in each laptop's firewall (including the macOS firewall).
 - Explain how to test that laptops can reach each other before running the system.
 
-## 13. Performance expectations
 
 ## 13. Performance expectations
 

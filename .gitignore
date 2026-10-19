@@ -1,0 +1,22 @@
+# Python environment
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Model weights and Hugging Face cache (downloaded, never committed)
+/models/
+.cache/
+
+# Benchmark and run outputs
+/outputs/
+/logs/
+
+# UI build
+ui/node_modules/
+ui/dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
