@@ -318,6 +318,23 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 
 **Risks:** Transformers renames or rearranges the weights while loading (the Granite file names differ from the in-memory names). The "identical to `from_pretrained`" test catches this.
 
+**Results (done 2026-10-19, 36 GB Mac):**
+- Built: `experts/slicing.py` (`check_expert_ids`, `local_index_table`, `slice_experts`, `ExpertSlice`), `experts/loader.py` (`WeightFiles`, `load_layer_experts`, `load_experts`), `models/base.py` (`ModelAdapter`), `models/granite.py` (`GraniteAdapter`), `models/__init__.py` (`adapter_for(config)` picks the adapter from the config's `model_type`), `tests/test_slicing.py`, `tests/test_loader.py`.
+- **Rule: expert lists are always stored in ascending order.** Local position *i* is the *i*-th smallest expert number, so a node's smaller stack is in the same order as the full one. The local index table is a tensor of length E (−1 = "not on this node"), so a whole batch of router picks converts in one step: `table[top_k_index]`.
+- **Granite's file → memory step is only a rename** (checked in `transformers/conversion_mapping.py`, entry `"granitemoe"`): `input_linear.weight` → `experts.gate_up_proj`, `output_linear.weight` → `experts.down_proj`. No transposing, no reordering. The file stores bf16; fp32 is made by converting (bf16 → fp32 is exact).
+- **Experts read from the file are bit-identical to `from_pretrained`** in fp32 and bf16, for layers 0, 5, 11, 17, 23 and expert sets `[0,4,8,12]`, `[3,7,19]`, `[30,31]`, `8..15` and all 32. This also proves the gate/up order.
+- **Finding: a safetensors slice is a view into the memory-mapped file, not a copy.** ("Memory-mapped": the OS maps the file into memory and loads pages only when they are touched.) Even `get_slice(name)[0:4]` sits on top of the whole tensor's mapping. If we kept these views, memory use would be hard to predict and the file would have to stay open. So the loader always returns tensors that **own their memory** (it copies when needed). A test checks this.
+- The loader reads neighbouring experts in one go (`[8..15]` = one read, `[0,4,8,12]` = four reads).
+- **Memory, all 24 layers, bf16** (measured in a separate process; baseline after imports ≈ 297 MB):
+
+  | Experts loaded | Tensor size | Memory kept after loading | Highest point during loading |
+  |---|---|---|---|
+  | 4 (`0,4,8,12`) | 288 MB | +316 MB | +595 MB |
+  | all 32 | 2,304 MB | +2,500 MB | +2,500 MB |
+
+  Kept memory is **0.126 ≈ 4/32** of loading everything. While loading, a partial load briefly needs about twice its size (the file pages being read plus our copy); closing the file gives that back. **Note for Phase 2.4 (8 GB check):** plan for ~2× the expert size at the highest point while loading, or load layer by layer and close the file in between, if this gets tight with Qwen.
+- Tests: 41 pass (23 fast ones without the model in ~4 s; all 41 in ~31 s).
+
 #### Phase 1.2 — Running experts with our own code (same math)
 
 **Goal:** a function that runs a set of experts on a set of tokens and gives exactly the same numbers as Transformers' expert code.
