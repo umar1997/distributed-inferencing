@@ -174,13 +174,17 @@ for chunk in client.chat.completions.create(model="ibm-granite/granite-3.0-1b-a4
 
 Supported: `stream`, `temperature` (0 = always the most likely word; default 1 like OpenAI), `top_p`, `max_tokens`, `stop`, `seed`. One answer is generated at a time; up to `MAX_QUEUE` (16) more wait in line, and beyond that requests get `429 busy`. Set `API_KEY=...` when starting to require a key.
 
-**Open WebUI** (a chat website that works with OpenAI-style servers) can use the cluster. It needs about 1 GB of memory more, so start it only when you want it:
+**Open WebUI** (a chat website that works with OpenAI-style servers) can use the cluster. The image is a 5.8 GB download and it uses about 1 GB of memory (capped at 1.5 GB below), so start it only when you want it. The settings turn off login (only you use it, on this Mac) and the extra features that would download more models or send extra requests to the cluster (titles, tags, follow-up suggestions):
 
 ```bash
-docker run -d --name open-webui -p 3000:8080 -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 \
-  -e OPENAI_API_KEY=unused -e ENABLE_OLLAMA_API=false -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:main
-# then open http://localhost:3000, create the local admin account, pick the Granite model and chat
-docker rm -f open-webui    # stop it again
+docker run -d --name open-webui --memory 1.5g -p 3000:8080 \
+  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 -e OPENAI_API_KEY=unused \
+  -e ENABLE_OLLAMA_API=false -e WEBUI_AUTH=False -e OFFLINE_MODE=true -e HF_HUB_OFFLINE=1 \
+  -e BYPASS_EMBEDDING_AND_RETRIEVAL=true -e ENABLE_TITLE_GENERATION=false -e ENABLE_TAGS_GENERATION=false \
+  -e ENABLE_FOLLOW_UP_GENERATION=false -e ENABLE_AUTOCOMPLETE_GENERATION=false \
+  -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:main
+# then open http://localhost:3000, pick the Granite model and chat
+docker rm -f open-webui    # stop it again (its settings stay in the "open-webui" volume)
 ```
 
 **Workers coming and going (Phase 2.2).** Each worker registers itself with the master and then sends a heartbeat ("I'm alive") every 2 s; the master also pings each worker every 3 s. `moe-node status` shows each worker as `joining`, `healthy`, `slow`, `dead` or `left`. Things to try:

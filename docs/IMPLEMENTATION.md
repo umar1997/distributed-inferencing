@@ -539,7 +539,7 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 - **Checked:**
   - `tests/test_openai_api.py` (15 tests, a master + one worker in the test process): official `openai` client, non-streaming and streaming; temperature 0 → **same text and token counts as the golden files**; streaming gives the same text in many small pieces; raw SSE lines arrive spread over time and end with `data: [DONE]`; stop texts; `max_tokens` → `finish_reason: "length"`; same seed → same sampled text, other seed → other text; error formats; 3 requests at once all get the right answers, one after the other; a client leaving frees the master; a worker failing mid-stream keeps the text and ends with an error.
   - **Against Docker:** `curl -N` shows the pieces arriving over ~4 s, then `data: [DONE]`; the `openai` client gives text identical to the Linux golden files (2 prompts) and streams.
-  - **Open WebUI: not tried yet** (it needs ~1 GB more memory; the commands are in SETUP.md section 8).
+  - **Open WebUI works:** started next to the cluster (memory capped at 1.5 GB, it used ~1 GB), it lists our model from `/v1/models` and a chat through it (`Name three colors.`) streamed back `Blue, green, and red.` in 7 pieces, answered by the cluster (master log: `request ... done: 8 tokens`). Login and the extra features that would send more requests or download models were turned off; the command is in SETUP.md section 8. **Phase 2.3 is done.**
 
 #### Phase 2.4 — The 8 GB memory check
 
