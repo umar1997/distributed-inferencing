@@ -4,7 +4,8 @@
 #   DTYPE=fp32 docker compose -f docker/docker-compose.yml up -d     # other number format
 #
 # The weights go into the named volume "models": downloaded once by "prepare", then shared.
-# Phase 2.1: the workers are listed here with fixed addresses (registration comes in 2.2).
+# Workers register themselves with the master (MASTER_ADDR) and send heartbeats; start order
+# does not matter. Short health timings for tests: DEAD_AFTER_S=4 ... docker compose up -d
 
 name: moe
 
@@ -21,6 +22,14 @@ x-env: &env
   MODEL_REVISION: ffec3c35bdfd97a06f0b4cd5fcc92cd9b1584445
   DTYPE: ${DTYPE:-bf16}
   CLUSTER_TOKEN: ${CLUSTER_TOKEN:-change-me-dev-token}
+
+x-worker-env: &worker-env
+  <<: *env
+  NODE_ROLE: worker
+  LISTEN_PORT: 8100
+  MASTER_ADDR: http://master:8000
+  TORCH_THREADS: ${WORKER_THREADS:-2}
+  REGISTER_RETRY_MAX_S: ${REGISTER_RETRY_MAX_S:-10}
 
 services:
   prepare:
@@ -39,8 +48,13 @@ services:
       LISTEN_PORT: 8000
       EXPERT_IDS: "0-9"
       COMBINE_MODE: ${COMBINE_MODE:-exact}
-      WORKERS: worker-1=http://worker-1:8100,worker-2=http://worker-2:8100
       TORCH_THREADS: ${MASTER_THREADS:-4}
+      HEARTBEAT_INTERVAL_S: ${HEARTBEAT_INTERVAL_S:-2}
+      PING_INTERVAL_S: ${PING_INTERVAL_S:-3}
+      SLOW_RTT_MS: ${SLOW_RTT_MS:-250}
+      DEAD_AFTER_S: ${DEAD_AFTER_S:-15}
+      RECOVER_AFTER_OK: ${RECOVER_AFTER_OK:-3}
+      EXPERT_CALL_TIMEOUT_S: ${EXPERT_CALL_TIMEOUT_S:-5}
     ports:
       - "8000:8000"
     depends_on:
@@ -50,12 +64,11 @@ services:
   worker-1:
     <<: *node
     environment:
-      <<: *env
-      NODE_ROLE: worker
+      <<: *worker-env
       NODE_ID: worker-1
-      LISTEN_PORT: 8100
+      ADVERTISE_ADDR: http://worker-1:8100
       EXPERT_IDS: "10-20"
-      TORCH_THREADS: ${WORKER_THREADS:-2}
+    cap_add: [NET_ADMIN]  # lets tests add network delay with `tc` (tests/test_failures.py)
     depends_on:
       prepare:
         condition: service_completed_successfully
@@ -63,12 +76,11 @@ services:
   worker-2:
     <<: *node
     environment:
-      <<: *env
-      NODE_ROLE: worker
+      <<: *worker-env
       NODE_ID: worker-2
-      LISTEN_PORT: 8100
+      ADVERTISE_ADDR: http://worker-2:8100
       EXPERT_IDS: "21-31"
-      TORCH_THREADS: ${WORKER_THREADS:-2}
+    cap_add: [NET_ADMIN]  # lets tests add network delay with `tc` (tests/test_failures.py)
     depends_on:
       prepare:
         condition: service_completed_successfully

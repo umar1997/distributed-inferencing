@@ -31,6 +31,18 @@ def parse_expert_ids(text: str, num_experts: int) -> list[int]:
     return check_expert_ids(ids, num_experts)
 
 
+def format_expert_ids(ids: list[int]) -> str:
+    """The reverse of parse_expert_ids: [10, 11, 12, 20] -> '10-12,20' ('none' when empty)."""
+    parts, start = [], None
+    for i, e in enumerate(ids):
+        if start is None:
+            start = e
+        if i + 1 == len(ids) or ids[i + 1] != e + 1:
+            parts.append(f"{start}-{e}" if e != start else f"{e}")
+            start = None
+    return ",".join(parts) or "none"
+
+
 class CoverageError(ValueError):
     """Some experts are held by no node, so the model cannot run."""
 

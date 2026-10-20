@@ -142,11 +142,12 @@ One image for every node; 1 master + 2 workers on this laptop. Needs Docker Desk
 # Build the image and start everything (first time: also downloads the model into a Docker volume)
 docker compose -f docker/docker-compose.yml up --build -d
 
-# Watch it start (master waits until both workers have loaded their experts)
+# Watch it start (workers register with the master by themselves, in any order)
 docker compose -f docker/docker-compose.yml logs -f
 
-# Is it ready?
+# Is it ready? Which nodes are alive?
 curl localhost:8000/health
+docker exec moe-master-1 moe-node status --master localhost:8000
 
 # Ask something (Phase 2.1 test call; the OpenAI-style API comes in Phase 2.3)
 curl localhost:8000/internal/generate -H 'content-type: application/json' \
@@ -159,7 +160,22 @@ docker stats --no-stream
 docker compose -f docker/docker-compose.yml down
 ```
 
-Settings you can change when starting: `DTYPE=fp32` (default `bf16`), `MASTER_THREADS=4`, `WORKER_THREADS=2`, `COMBINE_MODE=exact|fast`, `CLUSTER_TOKEN=...`, e.g. `DTYPE=fp32 docker compose -f docker/docker-compose.yml up -d`.
+Settings you can change when starting: `DTYPE=fp32` (default `bf16`), `MASTER_THREADS=4`, `WORKER_THREADS=2`, `COMBINE_MODE=exact|fast`, `CLUSTER_TOKEN=...`, and the health timings `HEARTBEAT_INTERVAL_S=2`, `PING_INTERVAL_S=3`, `SLOW_RTT_MS=250`, `DEAD_AFTER_S=15`, `RECOVER_AFTER_OK=3`, `EXPERT_CALL_TIMEOUT_S=5`, e.g. `DTYPE=fp32 docker compose -f docker/docker-compose.yml up -d`.
+
+**Workers coming and going (Phase 2.2).** Each worker registers itself with the master and then sends a heartbeat ("I'm alive") every 2 s; the master also pings each worker every 3 s. `moe-node status` shows each worker as `joining`, `healthy`, `slow`, `dead` or `left`. Things to try:
+
+```bash
+docker stop moe-worker-2-1                   # after ~15 s: worker-2 is "dead"; chat requests get 503 "missing experts"
+docker start moe-worker-2-1                  # it registers again by itself and becomes "healthy"
+docker restart moe-master-1                  # both workers register again with the new master by themselves
+docker exec moe-worker-2-1 moe-node leave    # worker-2 says goodbye ("left") and its container stops
+```
+
+The failure tests do all of this automatically (they take a few minutes):
+
+```bash
+.venv/bin/python -m pytest -m cluster tests/test_cluster_failures.py -s
+```
 
 **Company network with a security filter (e.g. Zscaler)?** If the build or the model download fails with `CERTIFICATE_VERIFY_FAILED`, follow [docker/certs/README.md](../docker/certs/README.md) (one command to copy the filter's certificate into `docker/certs/`, then build again). Without such a filter, skip this; nothing changes.
 
@@ -186,4 +202,7 @@ done
 | Download is very slow or stops | Run the same `hf download` command again; it continues where it stopped. |
 | "No space left on device" | Free space, or set `HF_HOME` to a disk with more room (section 5). |
 | Docker: `CERTIFICATE_VERIFY_FAILED` | A company security filter (e.g. Zscaler) is in the way: see [docker/certs/README.md](../docker/certs/README.md). |
+| `moe-node status` shows a worker `joining` forever | It is still loading, or loading failed: `docker logs moe-worker-1-1` shows why (also in the worker's `/health` under `error`). |
+| Worker log: `registration refused by the master: ...` | The worker runs another model, revision or `DTYPE` than the master; the reason says which. Start it with the master's settings. |
+| Worker log: `registration failed: master answered 401` | `CLUSTER_TOKEN` differs between the worker and the master. |
 | Docker: a container stops with no error | Probably out of memory: Docker Desktop's VM has one memory limit for all containers (Settings → Resources). The full fp32 model plus the running cluster does not fit in 8 GB; stop the cluster first. |

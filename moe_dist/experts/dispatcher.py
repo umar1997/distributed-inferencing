@@ -28,6 +28,7 @@ from torch import nn
 
 from moe_dist.experts.compute import EXACT, FAST, MODES, ExactResult, Pairs, combine_exact, plan_pairs, run_pairs
 from moe_dist.transport import codec
+from moe_dist.transport.client import NodeError
 
 
 @dataclass
@@ -138,7 +139,7 @@ class ExpertDispatcher(nn.Module):
             "layer": self.layer,
             "combine_mode": self.combine_mode,
         }
-        work = []  # (node_id, keep, needed, message), in node order
+        work = []  # (node_id, keep, needed, message, experts), in node order
         for n, node_id in enumerate(self.node_ids):
             keep = (owner == n).nonzero().squeeze(1)  # ascending: keeps Transformers' order
             if keep.numel() == 0:
@@ -154,9 +155,9 @@ class ExpertDispatcher(nn.Module):
                     "weight": mine.weight,
                 },
             )
-            work.append((node_id, keep, needed, message))
+            work.append((node_id, keep, needed, message, torch.unique(mine.expert).tolist()))
 
-        for (node_id, keep, needed, message), reply in zip(work, self._send(work)):
+        for (node_id, keep, needed, message, _), reply in zip(work, self._send(work)):
             self.stats.update(calls=1, bytes_sent=len(message), bytes_received=len(reply))
             _, tensors = codec.decode(reply)
             if self.combine_mode == EXACT:
@@ -172,15 +173,24 @@ class ExpertDispatcher(nn.Module):
     def _send(self, work) -> list[bytes]:
         """Send every node its message; remote ones at the same time, local ones right here."""
         if self.executor is None:
-            return [self.nodes[node_id].forward(message) for node_id, _, _, message in work]
+            return [self._call(node_id, message, experts) for node_id, _, _, message, experts in work]
         pending = {
-            node_id: self.executor.submit(self.nodes[node_id].forward, message)
-            for node_id, _, _, message in work
+            node_id: self.executor.submit(self._call, node_id, message, experts)
+            for node_id, _, _, message, experts in work
             if not isinstance(self.nodes[node_id], LocalNode)
         }
         local = {
-            node_id: self.nodes[node_id].forward(message)
-            for node_id, _, _, message in work
+            node_id: self._call(node_id, message, experts)
+            for node_id, _, _, message, experts in work
             if isinstance(self.nodes[node_id], LocalNode)
         }
-        return [local[node_id] if node_id in local else pending[node_id].result() for node_id, _, _, _ in work]
+        return [local[node_id] if node_id in local else pending[node_id].result() for node_id, *_ in work]
+
+    def _call(self, node_id: str, message: bytes, experts: list[int]) -> bytes:
+        try:
+            return self.nodes[node_id].forward(message)
+        except NodeError as exc:
+            # Never skip the missing experts silently: that would quietly give worse text.
+            what = "stopped responding" if exc.unreachable else "failed"
+            raise NodeError(f"{node_id} {what}; experts {experts} in layer {self.layer} are unavailable ({exc})",
+                            node_id, exc.unreachable) from exc

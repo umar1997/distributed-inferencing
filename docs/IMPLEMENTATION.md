@@ -83,7 +83,7 @@ At every layer the master waits for the slowest node, so one slow laptop slows e
 distributed-inferencing/
 ├── requirements.txt            # pinned dependency versions (install: docs/SETUP.md)
 ├── .venv/                      # local Python environment (git-ignored)
-├── pyproject.toml              # added with the CLI: makes `moe-node` a command
+├── pyproject.toml              # later (Phase 4): `pip install` makes `moe-node` a command outside Docker
 ├── moe_dist/                   # all Python code
 │   ├── config.py               # settings from environment variables (one place)
 │   ├── serve.py                # `python -m moe_dist.serve`: start master or worker
@@ -114,7 +114,7 @@ distributed-inferencing/
 │   │   ├── app.py              # FastAPI app for a worker
 │   │   └── membership.py       # register, heartbeat, re-register loop
 │   └── cli/
-│       └── main.py             # `moe-node join | status | leave | netcheck`
+│       └── main.py             # `moe-node serve | join | status | leave` (+ `netcheck` in 4.1)
 ├── ui/                         # React + Vite app (served by the master)
 │   └── src/
 │       ├── pages/Chat.tsx
@@ -133,8 +133,12 @@ distributed-inferencing/
 │   ├── test_codec.py
 │   ├── test_placement.py
 │   ├── test_equivalence.py     # "same tokens as Transformers"
+│   ├── servers.py              # helper: real master/worker services in the test process
+│   ├── test_remote.py          # real HTTP, no Docker
+│   ├── test_controller.py      # health rules with a fake clock
+│   ├── test_failures.py        # join / die / come back / leave, in the test process
 │   ├── test_cluster.py         # Step 2 tests against running containers
-│   └── test_failures.py
+│   └── test_cluster_failures.py  # docker stop / pause / restart, network delay
 ├── scripts/
 │   ├── make_golden.py          # create reference outputs for a model
 │   ├── benchmark.py            # fixed prompts → tokens/sec, network time
@@ -159,7 +163,8 @@ distributed-inferencing/
 | `NODE_ID` | `worker-1` | all | Unique name, appears in every log line |
 | `MASTER_ADDR` | `192.168.1.10:8000` | worker | Where to register |
 | `LISTEN_PORT` | `8000` / `8100` | all | Port inside the container |
-| `ADVERTISE_ADDR` | `192.168.1.21:8100` | worker | Address others use to reach **this** node (laptop's LAN IP + published port) |
+| `ADVERTISE_ADDR` | `192.168.1.21:8100` | worker | Address others use to reach **this** node (laptop's LAN IP + published port). Default: `<NODE_ID>:<LISTEN_PORT>` |
+| `REGISTER_RETRY_MAX_S` | `10` | worker | Longest wait between tries to reach the master (1, 2, 4 … this) |
 | `EXPERT_IDS` | `0-10` or `0,4,8,12` | all | Experts held in every layer (`none` allowed on master) |
 | `EXPERT_MAP` | `/config/placement.yaml` | all | Optional per-layer map (Phase 4.3); overrides `EXPERT_IDS` |
 | `MODEL_ID` | `ibm-granite/granite-3.0-1b-a400m-instruct` | all | Hugging Face model |
@@ -169,13 +174,15 @@ distributed-inferencing/
 | `CLUSTER_TOKEN` | a long random string | all | Shared secret; every internal call must send it |
 | `API_KEY` | optional | master | Optional key for the OpenAI-style API |
 | `COMBINE_MODE` | `exact` / `fast` | master | See section 4.2 |
-| `HEARTBEAT_INTERVAL_S` | `2` | worker | How often to send "I'm alive" |
+| `HEARTBEAT_INTERVAL_S` | `2` | master | How often workers send "I'm alive" (the master tells each worker when it registers) |
 | `PING_INTERVAL_S` | `3` | master | How often the master pings each worker |
+| `PING_TIMEOUT_S` | `2` | master | A ping without answer after this long counts as failed |
 | `SLOW_RTT_MS` | `250` | master | Typical round trip above this → `slow` |
 | `DEAD_AFTER_S` | `15` | master | No successful contact for this long → `dead` |
 | `RECOVER_AFTER_OK` | `3` | master | Good replies in a row needed to become `healthy` again |
 | `EXPERT_CALL_TIMEOUT_S` | `5` | master | Timeout for one expert call during generation |
-| `EXPERT_CALL_RETRIES` | `1` | master | Retries on the same node before failing over |
+| `EXPERT_CALL_RETRIES` | `1` | master | Retries on the same node before failing over (only when the worker did not answer or said "not ready") |
+| `TORCH_THREADS` | `4` / `2` | all | CPU threads for PyTorch (0 = all cores) |
 | `LOG_FORMAT` | `pretty` / `json` | all | |
 | `LOG_LEVEL` | `info` / `debug` | all | `debug` = one line per token per layer |
 
@@ -259,7 +266,7 @@ The ideas taken from FastChat's controller/worker design: workers register thems
 
 - Every state change is **always** logged at `info`: `worker-2 status: healthy → dead (no contact for 15.2 s)`, and sent to the UI.
 - A `slow` node is still used. Only `dead` / `left` nodes are excluded.
-- **Coverage check:** before accepting a chat request, the master checks that every (layer, expert) pair has at least one `healthy`/`slow` node. If not, it answers `503` with `{"error": "missing experts", "missing": {"all_layers": [21, 22, …]}, "held_by_dead_nodes": ["worker-2"]}`.
+- **Coverage check:** before accepting a chat request, the master checks that every (layer, expert) pair has at least one `healthy`/`slow` node. If not, it answers `503` with `{"error": "missing experts", "missing": {"all_layers": [21, 22, …]}, "unavailable_nodes": {"worker-2": "dead"}}`.
 - **Worker dies during a response:** retry once → backup copy if any → stop with a clear error (the reason is in section 1, Q8.3). The text streamed so far is kept, and the stream ends with an error message.
 - **Dead worker comes back:** its heartbeats start working again; the master says "re-register", the worker registers, and after 3 good contacts it is `healthy`.
 - **Master restarts:** workers see heartbeat failures, keep retrying (waiting 1, 2, 4… up to 10 s between tries), then see a new `master_epoch` and register again. Nothing to do by hand.
@@ -483,6 +490,27 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 **Done when:** all failure tests pass and every state change appears in the logs.
 
 **Risks:** timing-based tests can be flaky → use short test timings (e.g. dead after 3 s) set through env vars.
+
+**Results (done 2026-10-20, 36 GB Mac, Docker Desktop):**
+- Built: `master/controller.py` (node list, registration, health states, background pings), `worker/membership.py` (register, heartbeat, register again), `cli/main.py` (`moe-node serve | join | status | leave`; installed as a command in the image), worker endpoints `/internal/ping` and `/internal/leave`, master endpoints `/internal/register`, `/internal/heartbeat`, `/internal/leave`, `/api/nodes`, `/api/placement`. The fixed `WORKERS` list from 2.1 is gone: workers find the master through `MASTER_ADDR`, and start order does not matter. Tests: `test_controller.py` (every rule, with a fake clock), `test_failures.py` (real services in the test process, short timings), `test_cluster_failures.py` (Docker); helper `tests/servers.py`.
+- **The placement now follows the live nodes.** Before each request the master builds the placement from its own experts plus every `healthy`/`slow` worker. The dispatchers are rebuilt only when that set changed. If an expert is held by nobody usable, the request gets `503` with the missing experts and which unavailable nodes hold them; `/health` says `ready: false`.
+- **A worker failing during an answer:** the call is tried once more (only if the worker did not answer, or said "not ready"; a bad request is a bug, not a health sign). Then the answer stops with a clear error, e.g. `worker-2 stopped responding; experts [22, 23, 26, 27, 31] in layer 0 are unavailable`, and the worker is marked `dead` at once. Experts are never skipped silently.
+- **Measured in Docker** (real timings: heartbeat 2 s, ping 3 s, dead after 15 s):
+
+  | Test | Result |
+  |---|---|
+  | `docker stop worker-2` while idle | `healthy → slow` (heartbeat late, 6 s) `→ dead` after **14.9 s**; requests get 503 naming worker-2 |
+  | `docker start worker-2` | registers again by itself (`dead → joining → healthy`); golden prompt identical |
+  | `docker pause worker-2` during an answer | answer ends with the clear error after **10.1 s** (2 tries × 5 s timeout); master stays usable; after `unpause` the worker is asked to register again and becomes healthy |
+  | `docker restart master` | both workers register again with the new master by themselves; golden prompt identical |
+  | +350 ms network delay on worker-2 (`tc netem`) | `slow`, never `dead` (held for longer than the dead limit), still used; `healthy` again after the delay is removed |
+  | worker with another `DTYPE` | refused; the reason is in both logs: `number format (DTYPE) differs: you have 'fp32', the cluster uses 'bf16'` |
+  | wrong `CLUSTER_TOKEN` | `401`, logged by the master (`refused /internal/register from ...`) and the worker |
+  | `moe-node status`, `moe-node leave` | table with states, round trips, RAM, experts, coverage; leave → `left`, the container stops |
+
+- Design notes: a `dead` or `left` worker comes back only by registering again (its heartbeats get "reregister"), so a worker that restarted with other settings is always checked again. A refused worker keeps retrying, but each reason is logged once, not on every retry. `docker stop` gives no goodbye on purpose, so it looks like a crash (`dead`); only `moe-node leave` gives `left`. The status table shows "RTT now" (median of the last 5 pings, what the `slow` rule uses) and p95 of the last 50.
+- `/health` of the master now has `loaded` (model loaded) and `ready` (loaded **and** every expert covered), plus `health_rules` (the timings in use) and `master_epoch`.
+- Tests: 202 pass + 1 expected failure on this machine (`-m "not cluster"`, ~8 min); 7 failure tests against Docker (~3 min). One test was flaky (the new master was sometimes back before the worker's next heartbeat, so "heartbeat failed" was never logged); its check now accepts both paths.
 
 #### Phase 2.3 — The OpenAI-style API with streaming
 

@@ -1,11 +1,17 @@
 """All settings, read from environment variables in one place (docs/IMPLEMENTATION.md, section 3).
 
-Example: NODE_ROLE=worker NODE_ID=worker-1 EXPERT_IDS=10-20 python -m moe_dist.serve
+Example: NODE_ROLE=worker NODE_ID=worker-1 EXPERT_IDS=10-20 MASTER_ADDR=master:8000 python -m moe_dist.serve
 """
 
 from pydantic_settings import BaseSettings
 
 from moe_dist.models.catalog import DEFAULT_MODEL, pinned_revision
+
+
+def http_url(addr: str) -> str:
+    """'192.168.1.10:8000' or 'http://master:8000/' -> 'http://192.168.1.10:8000' / 'http://master:8000'."""
+    addr = addr.strip().rstrip("/")
+    return addr if addr.startswith(("http://", "https://")) else f"http://{addr}"
 
 
 class Settings(BaseSettings):
@@ -19,21 +25,29 @@ class Settings(BaseSettings):
     # Where weights are stored: Hugging Face's own HF_HOME variable (Docker sets HF_HOME=/models).
     cluster_token: str = ""  # shared secret for internal calls; empty -> no check (local runs only)
     combine_mode: str = "exact"  # master: exact / fast
-    # Phase 2.1: fixed worker list, "worker-1=http://worker-1:8100,worker-2=http://worker-2:8100".
-    # Registration replaces this in Phase 2.2.
-    workers: str = ""
-    workers_ready_timeout_s: float = 600  # master: how long to wait for workers to finish loading
-    expert_call_timeout_s: float = 5
     torch_threads: int = 0  # 0 -> PyTorch's default (all cores)
+
+    # Worker: where to register, and the address the master should use to reach this worker.
+    master_addr: str = ""  # e.g. "192.168.1.10:8000" or "http://master:8000"
+    advertise_addr: str = ""  # e.g. "192.168.1.21:8100"; empty -> http://<NODE_ID>:<LISTEN_PORT>
+    register_retry_max_s: float = 10  # worker: longest wait between tries (1, 2, 4 ... this)
+
+    # Master: health rules (docs/IMPLEMENTATION.md, section 5). The master tells each worker
+    # its heartbeat interval when it registers, so this one value is used on both sides.
+    heartbeat_interval_s: float = 2
+    ping_interval_s: float = 3
+    ping_timeout_s: float = 2
+    slow_rtt_ms: float = 250  # typical (median) ping round trip above this -> "slow"
+    dead_after_s: float = 15  # no successful contact for this long -> "dead"
+    recover_after_ok: int = 3  # good contacts in a row needed to become "healthy"
+    expert_call_timeout_s: float = 5
+    expert_call_retries: int = 1  # retries on the same node before giving up
 
     def revision(self) -> str:
         return self.model_revision or pinned_revision(self.model_id)
 
-    def worker_urls(self) -> dict[str, str]:
-        urls = {}
-        for item in filter(None, (x.strip() for x in self.workers.split(","))):
-            node_id, sep, url = item.partition("=")
-            if not sep or not node_id or not url.startswith("http"):
-                raise ValueError(f"WORKERS entry {item!r} should look like 'worker-1=http://worker-1:8100'")
-            urls[node_id.strip()] = url.strip().rstrip("/")
-        return urls
+    def master_url(self) -> str:
+        return http_url(self.master_addr) if self.master_addr else ""
+
+    def advertise_url(self) -> str:
+        return http_url(self.advertise_addr or f"{self.node_id}:{self.listen_port}")

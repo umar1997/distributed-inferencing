@@ -13,6 +13,8 @@ WORKDIR /app
 # (docker/certs/README.md). Without .crt files there, nothing changes.
 COPY docker/certs/ /usr/local/share/ca-certificates/extra/
 RUN update-ca-certificates
+# iproute2 gives `tc`, used by the failure tests to add network delay to a worker.
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
@@ -30,5 +32,7 @@ COPY pytest.ini ./
 COPY moe_dist ./moe_dist
 COPY scripts ./scripts
 COPY tests ./tests
+# `moe-node serve | join | status | leave` (moe_dist/cli/main.py)
+RUN printf '#!/bin/sh\nexec python -m moe_dist.cli "$@"\n' > /usr/local/bin/moe-node && chmod +x /usr/local/bin/moe-node
 
-CMD ["python", "-m", "moe_dist.serve"]
+CMD ["moe-node", "serve"]
