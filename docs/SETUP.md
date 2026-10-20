@@ -149,9 +149,9 @@ docker compose -f docker/docker-compose.yml logs -f
 curl localhost:8000/health
 docker exec moe-master-1 moe-node status --master localhost:8000
 
-# Ask something (Phase 2.1 test call; the OpenAI-style API comes in Phase 2.3)
-curl localhost:8000/internal/generate -H 'content-type: application/json' \
-  -d '{"messages": [{"role": "user", "content": "Name three colors."}], "max_new_tokens": 32}'
+# Ask something through the OpenAI-style API; -N shows the answer piece by piece as it is made
+curl -N localhost:8000/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"messages": [{"role": "user", "content": "Name three colors."}], "max_tokens": 32, "stream": true}'
 
 # Memory per container
 docker stats --no-stream
@@ -161,6 +161,27 @@ docker compose -f docker/docker-compose.yml down
 ```
 
 Settings you can change when starting: `DTYPE=fp32` (default `bf16`), `MASTER_THREADS=4`, `WORKER_THREADS=2`, `COMBINE_MODE=exact|fast`, `CLUSTER_TOKEN=...`, and the health timings `HEARTBEAT_INTERVAL_S=2`, `PING_INTERVAL_S=3`, `SLOW_RTT_MS=250`, `DEAD_AFTER_S=15`, `RECOVER_AFTER_OK=3`, `EXPERT_CALL_TIMEOUT_S=5`, e.g. `DTYPE=fp32 docker compose -f docker/docker-compose.yml up -d`.
+
+**Using it from other tools (Phase 2.3).** The master speaks the same API as OpenAI, Ollama and vLLM, at `http://localhost:8000/v1`. With the official Python client:
+
+```python
+import openai
+client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="unused")  # any key, unless API_KEY is set
+for chunk in client.chat.completions.create(model="ibm-granite/granite-3.0-1b-a400m-instruct", stream=True,
+                                            messages=[{"role": "user", "content": "Name three colors."}]):
+    print(chunk.choices[0].delta.content or "", end="", flush=True) if chunk.choices else None
+```
+
+Supported: `stream`, `temperature` (0 = always the most likely word; default 1 like OpenAI), `top_p`, `max_tokens`, `stop`, `seed`. One answer is generated at a time; up to `MAX_QUEUE` (16) more wait in line, and beyond that requests get `429 busy`. Set `API_KEY=...` when starting to require a key.
+
+**Open WebUI** (a chat website that works with OpenAI-style servers) can use the cluster. It needs about 1 GB of memory more, so start it only when you want it:
+
+```bash
+docker run -d --name open-webui -p 3000:8080 -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 \
+  -e OPENAI_API_KEY=unused -e ENABLE_OLLAMA_API=false -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:main
+# then open http://localhost:3000, create the local admin account, pick the Granite model and chat
+docker rm -f open-webui    # stop it again
+```
 
 **Workers coming and going (Phase 2.2).** Each worker registers itself with the master and then sends a heartbeat ("I'm alive") every 2 s; the master also pings each worker every 3 s. `moe-node status` shows each worker as `joining`, `healthy`, `slow`, `dead` or `left`. Things to try:
 

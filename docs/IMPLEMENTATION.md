@@ -107,6 +107,7 @@ distributed-inferencing/
 │   │   ├── app.py              # FastAPI app for the master
 │   │   ├── model_loader.py     # load shared parts + own experts only
 │   │   ├── engine.py           # runs generation, one request at a time, streaming
+│   │   ├── generation.py       # one answer: sampling settings, stop texts, streaming, the waiting line
 │   │   ├── controller.py       # node list, registration, health states
 │   │   ├── openai_api.py       # /v1/chat/completions, /v1/models
 │   │   └── events.py           # live events for the UI (Server-Sent Events)
@@ -137,6 +138,7 @@ distributed-inferencing/
 │   ├── test_remote.py          # real HTTP, no Docker
 │   ├── test_controller.py      # health rules with a fake clock
 │   ├── test_failures.py        # join / die / come back / leave, in the test process
+│   ├── test_openai_api.py      # /v1 API with the official openai client
 │   ├── test_cluster.py         # Step 2 tests against running containers
 │   └── test_cluster_failures.py  # docker stop / pause / restart, network delay
 ├── scripts/
@@ -173,6 +175,8 @@ distributed-inferencing/
 | `MODEL_DIR` | `/models` | all | Where weights are stored (Docker volume) |
 | `CLUSTER_TOKEN` | a long random string | all | Shared secret; every internal call must send it |
 | `API_KEY` | optional | master | Optional key for the OpenAI-style API |
+| `MAX_QUEUE` | `16` | master | Requests that may wait while one is answered; more get `429 busy` |
+| `DEFAULT_MAX_TOKENS` | `512` | master | Answer length when a request does not set `max_tokens` |
 | `COMBINE_MODE` | `exact` / `fast` | master | See section 4.2 |
 | `HEARTBEAT_INTERVAL_S` | `2` | master | How often workers send "I'm alive" (the master tells each worker when it registers) |
 | `PING_INTERVAL_S` | `3` | master | How often the master pings each worker |
@@ -525,6 +529,17 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 - Open WebUI (a popular chat UI that supports OpenAI-style servers), pointed at the master, can chat with it. This checks the "compatible with Ollama/vLLM tools" goal.
 
 **Done when:** all of the above work.
+
+**Results (2026-10-20, 36 GB Mac):**
+- Built: `master/openai_api.py` (`/v1/models`, `/v1/chat/completions`), `master/generation.py` (one answer: sampling settings, stop texts, streaming, and the waiting line), changes in `master/engine.py` (requests open a "session" when it is their turn) and `master/app.py`. Settings `API_KEY`, `MAX_QUEUE`, `DEFAULT_MAX_TOKENS`. Test package `openai` (the official client) added to `requirements.txt`.
+- **How streaming works:** Transformers' `generate()` runs in a background thread and hands over every new token; the API turns it into text and sends it at once as an SSE line (`data: {...}`). Text is decoded from all tokens so far, so a character split over two tokens (e.g. an emoji) is only sent when complete. With `stop`, generation ends as soon as a stop text appears, the stop text is left out, and while streaming a few characters are held back until it is clear they are not the start of a stop text.
+- **temperature 0 is the same code path as the golden files** (greedy, same `generate()` settings), so the answers are identical. Sampling (`temperature` > 0) uses `top_p` and turns off Transformers' hidden "top 50 words only" default (`top_k=0`), so it behaves like OpenAI; `seed` makes a sampled answer repeatable (one request runs at a time, so setting the seed is safe).
+- **One request at a time, the others wait in line** in arrival order (first come, first served); more than `MAX_QUEUE` waiting → `429 busy`. If a client goes away in the middle of a streamed answer, generation stops and the next request starts. If a worker stops answering mid-stream, the text sent so far is kept and the stream ends with an error line, then `data: [DONE]`.
+- Errors in OpenAI's format (`{"error": {"message", "type", "code"}}`): unknown model 404, `n` other than 1 → 400, bad values (e.g. `temperature: 5`) → 400, wrong API key → 401, busy → 429, not ready / missing experts → 503 (with the details), worker failed → 502.
+- **Checked:**
+  - `tests/test_openai_api.py` (15 tests, a master + one worker in the test process): official `openai` client, non-streaming and streaming; temperature 0 → **same text and token counts as the golden files**; streaming gives the same text in many small pieces; raw SSE lines arrive spread over time and end with `data: [DONE]`; stop texts; `max_tokens` → `finish_reason: "length"`; same seed → same sampled text, other seed → other text; error formats; 3 requests at once all get the right answers, one after the other; a client leaving frees the master; a worker failing mid-stream keeps the text and ends with an error.
+  - **Against Docker:** `curl -N` shows the pieces arriving over ~4 s, then `data: [DONE]`; the `openai` client gives text identical to the Linux golden files (2 prompts) and streams.
+  - **Open WebUI: not tried yet** (it needs ~1 GB more memory; the commands are in SETUP.md section 8).
 
 #### Phase 2.4 — The 8 GB memory check
 

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # Where weights are stored: Hugging Face's own HF_HOME variable (Docker sets HF_HOME=/models).
     cluster_token: str = ""  # shared secret for internal calls; empty -> no check (local runs only)
     combine_mode: str = "exact"  # master: exact / fast
+    api_key: str = ""  # master: if set, /v1/* needs "Authorization: Bearer <API_KEY>"
+    max_queue: int = 16  # master: requests allowed to wait while one runs; more get 429 "busy"
+    default_max_tokens: int = 512  # master: answer length when a request does not say
     torch_threads: int = 0  # 0 -> PyTorch's default (all cores)
 
     # Worker: where to register, and the address the master should use to reach this worker.

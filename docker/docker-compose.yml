@@ -48,6 +48,8 @@ services:
       LISTEN_PORT: 8000
       EXPERT_IDS: "0-9"
       COMBINE_MODE: ${COMBINE_MODE:-exact}
+      API_KEY: ${API_KEY:-}  # empty: the OpenAI-style API needs no key
+      MAX_QUEUE: ${MAX_QUEUE:-16}
       TORCH_THREADS: ${MASTER_THREADS:-4}
       HEARTBEAT_INTERVAL_S: ${HEARTBEAT_INTERVAL_S:-2}
       PING_INTERVAL_S: ${PING_INTERVAL_S:-3}

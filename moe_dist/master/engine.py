@@ -4,13 +4,13 @@ Start-up:
 1. load the shared parts of the model (no experts) and the master's own experts (if any),
 2. start the controller: workers register themselves (master/controller.py) and get health states.
 
-Before every request the engine looks at which workers are usable (healthy or slow) and builds the
+Requests run one at a time; the others wait in line (master/generation.py). Before every
+request the engine looks at which workers are usable (healthy or slow) and builds the
 placement from them and the master's own experts. If any expert is held by nobody usable, the
 request is refused with the list of missing experts. The dispatchers are rebuilt only when the set
 of usable workers changed.
 """
 
-import threading
 import time
 import uuid
 from collections import Counter
@@ -23,9 +23,9 @@ from moe_dist.experts.dispatcher import request_scope
 from moe_dist.experts.loader import model_dir
 from moe_dist.experts.placement import Placement, parse_expert_ids
 from moe_dist.master.controller import USABLE, Controller
+from moe_dist.master.generation import GenerationRequest, GenerationSession, RequestQueue
 from moe_dist.master.model_loader import install_dispatchers, load_shared_model, local_node
 from moe_dist.models import adapter_for
-from moe_dist.reference import greedy_generate
 from moe_dist.transport.client import NodeError
 
 
@@ -50,7 +50,7 @@ class Engine:
         self._key = None  # which nodes the current dispatchers were built for
         self._past_stats = Counter()  # from dispatchers that were replaced
         self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="expert-call")
-        self._lock = threading.Lock()  # one request at a time (Phase 2.3 adds a queue)
+        self.queue = RequestQueue(settings.max_queue)  # one request at a time, the others wait in line
 
     @property
     def loaded(self) -> bool:
@@ -118,7 +118,7 @@ class Engine:
         return {"error": "missing experts", "missing": missing, "unavailable_nodes": unavailable}
 
     def _prepare(self):
-        """Make the dispatchers match the usable nodes (called under the request lock)."""
+        """Make the dispatchers match the usable nodes (called when it is a request's turn)."""
         if not self.loaded:
             raise NotReady(self.error or "the master is still starting")
         problem = self.missing_report()
@@ -140,22 +140,67 @@ class Engine:
         own = [self.settings.node_id] if self.own_experts else []
         return own + [r.node_id for r in (self.controller.usable() if self.controller else [])]
 
-    def generate(self, messages: list[dict], max_new_tokens: int) -> dict:
-        request_id = uuid.uuid4().hex[:8]
-        with self._lock, request_scope(request_id):
+    def open_session(self, request: GenerationRequest) -> GenerationSession:
+        """Wait for our turn (first come, first served), then get ready to generate.
+
+        Raises Busy (queue full), NotReady (still loading / experts missing) or ValueError (bad request).
+        The caller must use `session.events()` or call `session.close()`, which lets the next one in.
+        """
+        if not self.loaded:
+            raise NotReady(self.error or "the master is still starting")
+        self.queue.enter()
+        try:
             self._prepare()
-            start = time.perf_counter()
+            request_id = uuid.uuid4().hex[:8]
+            session = GenerationSession(self.model, self.tokenizer, request, request_id, self._session_closed,
+                                        lambda work: self._run_request(request_id, work))
+            room = self.max_context - len(session.prompt_tokens)
+            if room <= 0:
+                raise ValueError(f"the prompt is {len(session.prompt_tokens)} tokens; this model reads at most "
+                                 f"{self.max_context}")
+            request.max_new_tokens = min(request.max_new_tokens, room)
+        except BaseException:
+            self.queue.leave()
+            raise
+        session.started = time.perf_counter()
+        return session
+
+    def _run_request(self, request_id: str, work):
+        """Run generate() with the request id set, and count a worker that stopped answering as dead."""
+        with request_scope(request_id):
             try:
-                result = greedy_generate(self.model, self.tokenizer, messages, max_new_tokens)
+                return work()
             except NodeError as exc:
                 if exc.unreachable:
                     self.controller.call_failed(exc.node_id, str(exc))
                 self.log(f"request {request_id} stopped: {exc}")
                 raise
-            seconds = time.perf_counter() - start
-        result.update(request_id=request_id, seconds=round(seconds, 3),
-                      tokens_per_s=round(len(result["output_tokens"]) / seconds, 2))
-        return result
+
+    def _session_closed(self, session: GenerationSession):
+        seconds = time.perf_counter() - session.started
+        self.log(f"request {session.request_id} done: {len(session.output_tokens)} tokens in {seconds:.1f} s "
+                 f"({session.finish_reason or 'stopped early'})")
+        self.queue.leave()
+
+    @property
+    def max_context(self) -> int:
+        return self.model.config.max_position_embeddings
+
+    def generate(self, messages: list[dict], max_new_tokens: int) -> dict:
+        """The whole answer at once, greedy (used by /internal/generate and the tests)."""
+        session = self.open_session(GenerationRequest(messages, max_new_tokens))
+        for _ in session.events():
+            pass
+        seconds = time.perf_counter() - session.started
+        return {
+            "request_id": session.request_id,
+            "prompt_tokens": session.prompt_tokens,
+            "output_tokens": session.output_tokens,
+            "output_text": session.text,
+            "finish_reason": session.finish_reason,
+            "seconds": round(seconds, 3),
+            "tokens_per_s": round(len(session.output_tokens) / seconds, 2),
+        }
 
     def stats(self) -> dict:
         calls = {node_id: node.calls for node_id, node in self.local_nodes.items()}

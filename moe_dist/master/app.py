@@ -1,4 +1,6 @@
-"""The master service (the OpenAI-style API comes in Phase 2.3).
+"""The master service.
+
+    GET  /v1/models, POST /v1/chat/completions   the OpenAI-style API (master/openai_api.py)
 
     GET  /health                 loaded / ready, missing experts, nodes taking part
     GET  /api/nodes              every node with its health state, round trips, RAM, experts
@@ -14,6 +16,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -21,6 +24,8 @@ from pydantic import BaseModel
 from moe_dist import __version__
 from moe_dist.config import Settings
 from moe_dist.master.engine import Engine, NotReady
+from moe_dist.master.generation import Busy
+from moe_dist.master.openai_api import error, make_router
 from moe_dist.transport.client import NodeError
 
 
@@ -43,6 +48,13 @@ def create_app(settings: Settings | None = None, log=None) -> FastAPI:
 
     app = FastAPI(title="moe master", lifespan=lifespan)
     app.state.engine = engine
+    app.include_router(make_router(engine, settings))
+
+    @app.exception_handler(RequestValidationError)
+    async def bad_request(request: Request, exc: RequestValidationError):
+        # OpenAI clients expect {"error": {...}}, not FastAPI's {"detail": [...]}.
+        problems = "; ".join(f"{'.'.join(str(x) for x in e['loc'][1:])}: {e['msg']}" for e in exc.errors())
+        return error(400, problems or "bad request")
 
     def controller(request: Request):
         """The controller, after checking the cluster token (wrong token -> 401, logged)."""
@@ -77,6 +89,7 @@ def create_app(settings: Settings | None = None, log=None) -> FastAPI:
             "missing_experts": sum(len(ids) for ids in problem["missing"].values()) if problem else 0,
             "missing": problem,
             "nodes": engine.node_ids(),
+            "queue": {"running": engine.queue.running, "waiting": engine.queue.waiting},
             **engine.stats(),
         }
 
@@ -121,6 +134,8 @@ def create_app(settings: Settings | None = None, log=None) -> FastAPI:
             return await run_in_threadpool(engine.generate, request.messages, request.max_new_tokens)
         except NotReady as exc:
             return JSONResponse(exc.details, status_code=503)
+        except Busy as exc:
+            return JSONResponse({"error": str(exc)}, status_code=429)
         except NodeError as exc:  # a worker stopped answering in the middle of the answer
             return JSONResponse({"error": str(exc), "node_id": exc.node_id}, status_code=502)
 
