@@ -40,6 +40,7 @@ On a home network the number of round trips decides the speed, so this rule matt
 
 - **fp32** — most exact, works everywhere. **Use it for correctness tests** (it removes rounding noise). Granite in fp32 is 5.3 GB, fine on the 36 GB Mac.
 - **bf16** — half the memory. This is what the models ship in. It works in PyTorch on both ARM and x86, but its speed depends on the CPU (newer Apple and Intel/AMD chips have special bf16 instructions). **Use it as the normal setting.**
+  *Decided after Phase 2.1:* bf16 results depend on the platform (macOS and Linux pick different tokens for 5 of 10 prompts, even with plain Transformers), while fp32 gave identical tokens on both. So across different machines: **fp32 must give identical tokens; bf16 must pass the near-tie rule** plus a check by hand. bf16 stays the normal setting because Qwen1.5 (57 GB in fp32) only fits in bf16.
 - **int8** — a quarter of fp32. PyTorch's ready-made int8 tools don't handle packed 3-D expert tensors, so it needs our own small code. **Only needed for the Qwen3-30B stretch goal.**
 
 `DTYPE` is a setting; Phase 1 measures the real speed of fp32 vs bf16 on the Mac.
@@ -85,6 +86,8 @@ distributed-inferencing/
 ├── pyproject.toml              # added with the CLI: makes `moe-node` a command
 ├── moe_dist/                   # all Python code
 │   ├── config.py               # settings from environment variables (one place)
+│   ├── serve.py                # `python -m moe_dist.serve`: start master or worker
+│   ├── prepare.py              # one-time model download (Docker "prepare" step)
 │   ├── logs.py                 # log format: pretty or JSON, request/token/layer fields
 │   ├── models/                 # one small "adapter" per model family
 │   │   ├── base.py             # what every adapter must provide
@@ -119,6 +122,7 @@ distributed-inferencing/
 │       └── components/ (NodeMap, ExpertGrid, RoutingView, Stats)
 ├── docker/
 │   ├── Dockerfile              # one image for every node, multi-architecture
+│   ├── certs/                  # optional extra certificates (company security filters)
 │   ├── docker-compose.yml      # Step 2: 1 master + 2 workers on one laptop
 │   └── docker-compose.8gb.yml  # same, with memory limits for the 8 GB check
 ├── tests/
@@ -432,6 +436,31 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 
 **Risks:** the weights download is started by 3 containers at once → do the download in a one-time "prepare" step, or have workers wait for the master. Docker's networking adds a little delay → measured and logged in Phase 3.
 
+**Results (done 2026-10-20, 36 GB Mac, Docker Desktop: Linux VM with 12 CPUs, 7.75 GB):**
+- Built: `config.py` (settings from environment variables), `serve.py` (`python -m moe_dist.serve`, picks master or worker from `NODE_ROLE`), `prepare.py` (one-time model download), `worker/app.py`, `master/app.py` (`/health` + a simple `/internal/generate`; the OpenAI API comes in 2.3), `master/engine.py` (start-up + one request at a time), `transport/client.py` (`RemoteNode`, `wait_until_ready`), `docker/Dockerfile`, `docker/docker-compose.yml`, `docker/certs/` (optional extra certificates), `.dockerignore`; tests `test_model_loader.py`, `test_remote.py` (real HTTP, no Docker), `test_cluster.py` (against the containers; marker `cluster`).
+- **The master never holds the full model.** While Transformers builds the model, each MoE block gets an empty stand-in instead of its experts, so Transformers loads only the shared parts (with its own renames and conversions) and skips the expert weights. A strict check allows only expert weights to be skipped and nothing to be missing. Shared parts: **242 MB** (bf16) / 483 MB (fp32) instead of 2,546 / 5,091 MB, bit-identical to a normal load (incl. the computed rotary table and the output layer tied to the embeddings). Phase 1's `build_local_cluster` uses the same loader, and its tests still pass.
+- The master asks every worker's `/health` which experts it holds (no duplicate lists in the config) and refuses to start if a worker runs another model, revision or number format, or if any expert is missing. Workers start loading at once, and `/health` says "not ready" until they are done. Remote workers are called at the same time (thread pool) while the master runs its own experts; the order of combining stays fixed, so this cannot change the result.
+- **Identical tokens over real HTTP**: on this Mac without Docker (`test_remote.py`, fp32 and bf16, all prompts), and in Docker (`test_cluster.py`, fp32 and bf16, all 10 prompts). Error cases are tested: wrong token → 401, expert not on that worker → 400, damaged message → 400, worker gone → clear error, other number format / missing expert → the master refuses to start.
+- **Finding: Linux and macOS give different bf16 tokens even for plain Transformers.** Plain Transformers inside the container vs the macOS golden files: **fp32: 10 of 10 prompts identical** (scores differ by ~0.00003); **bf16: only 5 of 10**, with differences where the two best words were 0.375-0.75 apart, not near-ties. So the containers are compared with golden files made inside the container (`tests/golden/<model>/linux-aarch64/`, `make_golden.py --platform`), which are repeatable run to run. **For Phase 4:** bf16 will probably not match across different machines; fp32 is the portable choice for "same text everywhere".
+- **Memory per container** (`docker stats` after all 10 prompts; "program" = the process's own memory, "file pages" = parts of files kept in memory, e.g. the weight file or PyTorch's libraries):
+
+  | | bf16 | fp32 |
+  |---|---|---|
+  | master (shared parts + experts 0-9) | 1,484 MB | 2,435 MB |
+  | worker-1 (experts 10-20) | 1,154 MB | 1,746 MB |
+  | worker-2 (experts 21-31) | 1,143 MB | 1,726 MB |
+  | full model's weights alone, for comparison | 2,546 MB | 5,091 MB |
+
+  Runtime overhead is ~350 MB per worker and ~500-800 MB on the master (tokenizer, Transformers' objects, generation buffers). The master keeps its shared weights as pages of the weight file (~400 MB "file pages").
+- **Speed in Docker is low: ~1.8 tok/s** (bf16 and fp32), against 16.5 tok/s for Phase 1 on macOS and **~5-6 tok/s for plain Transformers inside one container** (all 12 CPUs). Measured where the time goes:
+  - One worker call (1 token, 4 experts) from master to worker takes **2 ms**, of which only **0.6 ms** is network + HTTP + packing. The network is not the problem.
+  - **One-token expert work is 2-15× slower inside Docker's VM than on macOS directly** (3 experts, 1 token: 0.23-0.40 ms on macOS; 2-5.5 ms in the VM with 1-4 threads, 0.7-3.5 ms with 12). For one token this work is mostly reading weights from memory, and inside the VM a single thread reads at only ~4 GB/s (macOS: ~55 GB/s).
+  - So **the thread setting barely matters** (master/workers 4/2: 1.93 tok/s, 6/3: 1.82, 8/4: 1.84, 12/12: 1.78). The plan's idea "fewer threads per container so they don't fight" doesn't help on Docker Desktop for Mac. Default kept at 4/2.
+  - This is a property of Docker Desktop's VM on a Mac, not of our code. On a Linux laptop Docker runs without a VM; to be measured in Phase 4. Phase 3's logs will show the per-layer timings live.
+- **Company network:** this Mac's internet goes through Zscaler, a security filter that re-signs HTTPS connections with its own certificate. Containers don't trust that certificate, so `pip` and the model download failed (`CERTIFICATE_VERIFY_FAILED`). Fix: `docker/certs/` holds optional extra certificates (git-ignored); the image trusts them, both in the system list (pip) and in Python's `certifi` list (Hugging Face). Certificate checks stay on. Checked both ways: **without a certificate** (other laptops) the build works and nothing changes; **with it** (this Mac) Hugging Face and PyTorch's servers are reachable. How-to: `docker/certs/README.md`, SETUP.md section 8.
+- **Open for Phase 2.2:** if a worker restarts after the master has checked it, the master doesn't notice until a call fails (seen once while restarting containers during the speed tests). Registration, heartbeats and health states (2.2) handle this.
+- Tests: 177 pass + 1 expected failure on this machine (`-m "not cluster"`, ~6 min; 138 quick ones in ~14 s), and 2 cluster tests per number format against Docker (~5 min each).
+
 #### Phase 2.2 — Registration, heartbeats, pings, health
 
 **Goal:** workers join and leave by themselves, the master always knows who is alive, and requests are refused when experts are missing.
@@ -581,7 +610,8 @@ docker run -d --name moe-worker -p 8100:8100 -v moe-models:/models \
 ```
 
 **How to test it:**
-- Golden prompts → identical tokens if all three laptops are Apple Silicon; if Laptop A is x86, apply the near-tie rule from Phase 1.3.
+- **fp32 run (exactness check):** golden prompts → **identical tokens**. Phase 2.1 showed fp32 gives the same tokens on macOS and Linux, so fp32 is how we prove the cluster is exact across different machines.
+- **bf16 run (normal setting):** golden prompts → **near-tie rule** from Phase 1.3 (a different token is allowed only where the top two scores were within 0.1), then read a few answers by hand to check they still make sense. Reason: in bf16 the platform alone changes tokens (Phase 2.1: 5 of 10 prompts differ between macOS and Linux), and across laptops each expert runs on a different machine, so the answer mixes their rounding and may match no single golden file exactly.
 - Repeat the failure tests from Phase 2.2 for real: close a laptop's lid, turn off a laptop's Wi-Fi for 10 s (must become `slow` or recover, not crash), unplug-and-return.
 - `scripts/benchmark.py` → tokens/sec and network time per node, compared with the estimates in section 7.
 

@@ -107,8 +107,9 @@ hf download ibm-granite/granite-3.0-1b-a400m-instruct \
 ## 6. Run the tests
 
 ```bash
-pytest                  # all tests
-pytest -m "not model"   # only the quick tests that don't load the model
+pytest -m "not cluster"               # everything on this machine (~6 min)
+pytest -m "not model and not cluster" # only the quick tests that don't load the model (~15 s)
+pytest -m cluster -s                  # against the running Docker containers (section 8)
 ```
 
 The reference ("golden") outputs that tests compare against are made once with:
@@ -133,7 +134,49 @@ To start completely fresh: `rm -rf .venv`, then go back to step 2.
 
 ---
 
-## 8. Common problems
+## 8. Run the cluster in Docker (Step 2)
+
+One image for every node; 1 master + 2 workers on this laptop. Needs Docker Desktop running.
+
+```bash
+# Build the image and start everything (first time: also downloads the model into a Docker volume)
+docker compose -f docker/docker-compose.yml up --build -d
+
+# Watch it start (master waits until both workers have loaded their experts)
+docker compose -f docker/docker-compose.yml logs -f
+
+# Is it ready?
+curl localhost:8000/health
+
+# Ask something (Phase 2.1 test call; the OpenAI-style API comes in Phase 2.3)
+curl localhost:8000/internal/generate -H 'content-type: application/json' \
+  -d '{"messages": [{"role": "user", "content": "Name three colors."}], "max_new_tokens": 32}'
+
+# Memory per container
+docker stats --no-stream
+
+# Stop (the downloaded model stays in the "models" volume)
+docker compose -f docker/docker-compose.yml down
+```
+
+Settings you can change when starting: `DTYPE=fp32` (default `bf16`), `MASTER_THREADS=4`, `WORKER_THREADS=2`, `COMBINE_MODE=exact|fast`, `CLUSTER_TOKEN=...`, e.g. `DTYPE=fp32 docker compose -f docker/docker-compose.yml up -d`.
+
+**Company network with a security filter (e.g. Zscaler)?** If the build or the model download fails with `CERTIFICATE_VERIFY_FAILED`, follow [docker/certs/README.md](../docker/certs/README.md) (one command to copy the filter's certificate into `docker/certs/`, then build again). Without such a filter, skip this; nothing changes.
+
+**Golden files for Linux.** Containers run Linux, whose maths libraries round slightly differently from macOS; in bf16 that changes some tokens even for plain Transformers. So the cluster is compared with golden files made inside the container:
+
+```bash
+docker compose -f docker/docker-compose.yml stop master worker-1 worker-2   # frees memory for the full model
+for d in fp32 bf16; do
+  docker compose -f docker/docker-compose.yml run --rm --no-deps \
+    -v "$PWD/tests/golden:/app/tests/golden" -v "$PWD/scripts:/app/scripts" \
+    master python scripts/make_golden.py --dtype $d --platform linux-aarch64
+done
+```
+
+---
+
+## 9. Common problems
 
 | Problem | Fix |
 |---|---|
@@ -142,3 +185,5 @@ To start completely fresh: `rm -rf .venv`, then go back to step 2.
 | `hf: command not found` | Same: activate the environment (`hf` is installed by `huggingface_hub`). |
 | Download is very slow or stops | Run the same `hf download` command again; it continues where it stopped. |
 | "No space left on device" | Free space, or set `HF_HOME` to a disk with more room (section 5). |
+| Docker: `CERTIFICATE_VERIFY_FAILED` | A company security filter (e.g. Zscaler) is in the way: see [docker/certs/README.md](../docker/certs/README.md). |
+| Docker: a container stops with no error | Probably out of memory: Docker Desktop's VM has one memory limit for all containers (Settings → Resources). The full fp32 model plus the running cluster does not fit in 8 GB; stop the cluster first. |

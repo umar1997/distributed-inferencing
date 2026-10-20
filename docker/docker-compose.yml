@@ -1,0 +1,77 @@
+# Step 2: 1 master + 2 workers on one laptop.
+#
+#   docker compose -f docker/docker-compose.yml up --build -d
+#   DTYPE=fp32 docker compose -f docker/docker-compose.yml up -d     # other number format
+#
+# The weights go into the named volume "models": downloaded once by "prepare", then shared.
+# Phase 2.1: the workers are listed here with fixed addresses (registration comes in 2.2).
+
+name: moe
+
+x-node: &node
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  image: moe-node:dev
+  volumes:
+    - models:/models
+
+x-env: &env
+  MODEL_ID: ibm-granite/granite-3.0-1b-a400m-instruct
+  MODEL_REVISION: ffec3c35bdfd97a06f0b4cd5fcc92cd9b1584445
+  DTYPE: ${DTYPE:-bf16}
+  CLUSTER_TOKEN: ${CLUSTER_TOKEN:-change-me-dev-token}
+
+services:
+  prepare:
+    <<: *node
+    command: ["python", "-m", "moe_dist.prepare"]
+    environment:
+      <<: *env
+    restart: "no"
+
+  master:
+    <<: *node
+    environment:
+      <<: *env
+      NODE_ROLE: master
+      NODE_ID: master
+      LISTEN_PORT: 8000
+      EXPERT_IDS: "0-9"
+      COMBINE_MODE: ${COMBINE_MODE:-exact}
+      WORKERS: worker-1=http://worker-1:8100,worker-2=http://worker-2:8100
+      TORCH_THREADS: ${MASTER_THREADS:-4}
+    ports:
+      - "8000:8000"
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+
+  worker-1:
+    <<: *node
+    environment:
+      <<: *env
+      NODE_ROLE: worker
+      NODE_ID: worker-1
+      LISTEN_PORT: 8100
+      EXPERT_IDS: "10-20"
+      TORCH_THREADS: ${WORKER_THREADS:-2}
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+
+  worker-2:
+    <<: *node
+    environment:
+      <<: *env
+      NODE_ROLE: worker
+      NODE_ID: worker-2
+      LISTEN_PORT: 8100
+      EXPERT_IDS: "21-31"
+      TORCH_THREADS: ${WORKER_THREADS:-2}
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+
+volumes:
+  models:

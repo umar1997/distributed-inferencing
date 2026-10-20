@@ -20,3 +20,7 @@ ui/dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Company network certificates for Docker (see docker/certs/README.md)
+docker/certs/*.crt
+docker/certs/*.pem

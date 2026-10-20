@@ -8,9 +8,13 @@ The dispatcher takes the same inputs and gives the same output, but:
    per layer, packed with transport/codec.py),
 3. puts the answers back together (`combine_exact` or the fast per-token sums).
 
-A node is anything with `node_id` and `forward(message: bytes) -> bytes`. In Phase 1.3 that is a
-`LocalNode` in the same program; in Phase 2 it becomes an HTTP client for a worker container.
-Either way the bytes are the same, so the message format is tested before any network exists.
+A node is anything with `node_id` and `forward(message: bytes) -> bytes`: a `LocalNode` in the same
+program (the master's own experts, or Phase 1's virtual nodes), or a `RemoteNode`
+(transport/client.py) that sends the bytes to a worker over HTTP. The bytes are the same either way.
+
+With an `executor` (a thread pool), all remote nodes of a layer are called at the same time while
+the master runs its own experts; the answers are still combined in the fixed order, so running
+in parallel cannot change the result.
 """
 
 import contextvars
@@ -94,7 +98,9 @@ class LocalNode:
 class ExpertDispatcher(nn.Module):
     """Drop-in replacement for one layer's `experts` module."""
 
-    def __init__(self, layer: int, placement, nodes: dict, combine_mode: str = EXACT, first_layer: bool = False):
+    def __init__(
+        self, layer: int, placement, nodes: dict, combine_mode: str = EXACT, first_layer: bool = False, executor=None
+    ):
         super().__init__()
         if combine_mode not in MODES:
             raise ValueError(f"unknown combine mode {combine_mode!r}; use one of {MODES}")
@@ -108,6 +114,7 @@ class ExpertDispatcher(nn.Module):
         self.owner_of = table  # expert -> index into self.node_ids, -1 = nobody
         self.node_ids = node_ids
         self.nodes = nodes
+        self.executor = executor
         self.stats = Counter()  # calls, bytes_sent, bytes_received
 
     def extra_repr(self) -> str:
@@ -125,18 +132,19 @@ class ExpertDispatcher(nn.Module):
 
         out_rows = hidden_states.new_empty(pairs.row.shape[0], hidden_states.shape[1]) if self.combine_mode == EXACT else None
         result = torch.zeros_like(hidden_states) if self.combine_mode == FAST else None
+        header = {
+            "request_id": info.request_id if info else None,
+            "token_index": info.token_index if info else None,
+            "layer": self.layer,
+            "combine_mode": self.combine_mode,
+        }
+        work = []  # (node_id, keep, needed, message), in node order
         for n, node_id in enumerate(self.node_ids):
             keep = (owner == n).nonzero().squeeze(1)  # ascending: keeps Transformers' order
             if keep.numel() == 0:
                 continue
             mine = pairs.select(keep)
             needed = torch.unique(mine.row)  # sorted rows: the batch order stays the same
-            header = {
-                "request_id": info.request_id if info else None,
-                "token_index": info.token_index if info else None,
-                "layer": self.layer,
-                "combine_mode": self.combine_mode,
-            }
             message = codec.encode(
                 header,
                 {
@@ -146,7 +154,9 @@ class ExpertDispatcher(nn.Module):
                     "weight": mine.weight,
                 },
             )
-            reply = self.nodes[node_id].forward(message)
+            work.append((node_id, keep, needed, message))
+
+        for (node_id, keep, needed, message), reply in zip(work, self._send(work)):
             self.stats.update(calls=1, bytes_sent=len(message), bytes_received=len(reply))
             _, tensors = codec.decode(reply)
             if self.combine_mode == EXACT:
@@ -158,3 +168,19 @@ class ExpertDispatcher(nn.Module):
             return result
         experts, counts = torch.unique_consecutive(pairs.expert, return_counts=True)
         return combine_exact([ExactResult(experts, counts, pairs.row, out_rows)], hidden_states)
+
+    def _send(self, work) -> list[bytes]:
+        """Send every node its message; remote ones at the same time, local ones right here."""
+        if self.executor is None:
+            return [self.nodes[node_id].forward(message) for node_id, _, _, message in work]
+        pending = {
+            node_id: self.executor.submit(self.nodes[node_id].forward, message)
+            for node_id, _, _, message in work
+            if not isinstance(self.nodes[node_id], LocalNode)
+        }
+        local = {
+            node_id: self.nodes[node_id].forward(message)
+            for node_id, _, _, message in work
+            if isinstance(self.nodes[node_id], LocalNode)
+        }
+        return [local[node_id] if node_id in local else pending[node_id].result() for node_id, _, _, _ in work]

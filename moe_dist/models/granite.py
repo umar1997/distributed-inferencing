@@ -27,6 +27,11 @@ class GraniteAdapter(ModelAdapter):
     def experts_module_path(self, layer: int) -> str:
         return f"model.layers.{layer}.block_sparse_moe.experts"
 
+    def moe_block_class(self) -> type:
+        from transformers.models.granitemoe.modeling_granitemoe import GraniteMoeMoE
+
+        return GraniteMoeMoE
+
     def file_tensor_names(self, layer: int) -> tuple[str, str]:
         prefix = f"model.layers.{layer}.block_sparse_moe"
         return f"{prefix}.input_linear.weight", f"{prefix}.output_linear.weight"

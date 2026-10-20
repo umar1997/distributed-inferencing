@@ -39,6 +39,11 @@ class ModelAdapter(ABC):
         e.g. 'model.layers.3.block_sparse_moe.experts'. The dispatcher replaces this module."""
 
     @abstractmethod
+    def moe_block_class(self) -> type:
+        """The Transformers class of an MoE block (the module that has the `experts` attribute).
+        Used to build the model without expert weights (master/model_loader.py)."""
+
+    @abstractmethod
     def read_experts(self, files, layer: int, expert_ids: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
         """Read only `expert_ids` (ascending, already checked) of one layer from the weight files.
 

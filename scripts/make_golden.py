@@ -2,6 +2,11 @@
 
     python scripts/make_golden.py --dtype fp32            # write tests/golden/<model>/fp32.json
     python scripts/make_golden.py --dtype fp32 --check    # run again, compare with the saved file
+    python scripts/make_golden.py --dtype bf16 --platform linux-aarch64   # tests/golden/<model>/linux-aarch64/
+
+Different maths libraries (macOS vs Linux, ARM vs x86) round slightly differently, and in bf16 that
+changes some tokens even for plain Transformers. So each platform where we compare gets its own
+files; the top-level files are the macOS (Apple Silicon) reference.
 
 Every later phase must produce the same tokens as these files (docs/IMPLEMENTATION.md, Phase 0).
 """
@@ -26,8 +31,9 @@ PROMPTS_FILE = ROOT / "scripts" / "prompts.json"
 GOLDEN_DIR = ROOT / "tests" / "golden"
 
 
-def golden_path(model_id: str, dtype: str) -> Path:
-    return GOLDEN_DIR / short_name(model_id) / f"{dtype}.json"
+def golden_path(model_id: str, dtype: str, platform: str = "") -> Path:
+    folder = GOLDEN_DIR / short_name(model_id)
+    return (folder / platform if platform else folder) / f"{dtype}.json"
 
 
 def compare(saved: dict, fresh: dict) -> list[str]:
@@ -64,6 +70,7 @@ def main():
     parser.add_argument("--dtype", choices=["fp32", "bf16"], default="fp32")
     parser.add_argument("--max-new-tokens", type=int, default=64)
     parser.add_argument("--check", action="store_true", help="compare with the saved file instead of writing it")
+    parser.add_argument("--platform", default="", help="sub-folder for another platform, e.g. linux-aarch64")
     args = parser.parse_args()
 
     revision = pinned_revision(args.model)
@@ -98,7 +105,7 @@ def main():
     }
     print(f"average speed: {golden['speed_tok_per_s']} tok/s (including prompt reading)")
 
-    path = golden_path(args.model, args.dtype)
+    path = golden_path(args.model, args.dtype, args.platform)
     if args.check:
         problems = compare(json.loads(path.read_text()), golden)
         if problems:
