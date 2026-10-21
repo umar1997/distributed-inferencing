@@ -28,6 +28,7 @@ import httpx
 
 from moe_dist.experts.placement import format_expert_ids
 from moe_dist.experts.slicing import check_expert_ids
+from moe_dist.logs import info_logger
 from moe_dist.transport.client import RemoteNode
 
 JOINING, HEALTHY, SLOW, DEAD, LEFT = "joining", "healthy", "slow", "dead", "left"
@@ -69,10 +70,10 @@ class NodeRecord:
 
 
 class Controller:
-    def __init__(self, settings, num_experts: int, log=print, clock=time.monotonic):
+    def __init__(self, settings, num_experts: int, log=None, clock=time.monotonic):
         self.settings = settings
         self.num_experts = num_experts
-        self.log = log
+        self.log = log if log is not None else info_logger()
         self.clock = clock
         self.epoch = uuid.uuid4().hex[:12]  # new on every master start; workers notice and register again
         self.nodes: dict[str, NodeRecord] = {}

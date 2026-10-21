@@ -599,6 +599,15 @@ Example output (`LOG_LEVEL=debug`, `LOG_FORMAT=pretty`):
 
 **Done when:** you can follow a token by `grep "token=14"` across all containers.
 
+**Results (done 2026-10-21, 36 GB Mac):**
+- Built: `moe_dist/logs.py` (one format for every node: time, node, level, and inside a request `req=` / `token=` / `layer=`; `pretty` or `json`), settings `LOG_LEVEL` and `LOG_FORMAT` (also passed through docker-compose). The request id and token number come from the request context the dispatcher already had (Phase 1.3), so Transformers' code is untouched. Debug lines are only built when debug is on, so `info` costs nothing extra.
+- **Lines per token and layer** (`debug`): master `router picked experts [...]` (for the prompt: how many (token, expert) pairs and how many different experts), `sending [5,6] → local, [10,12,15,20] → worker-1, ...`, each node's `ran experts [...] on 1 token in 8.8 ms` (workers take req / token / layer from the message header), then `all results back in 15.0 ms (slowest: worker-1, net 1.2 ms + compute 13.7 ms)` and `produced ' Par' (tok/s so far: 1.4)`.
+- **Network time** for a call = how long the master waited minus the compute time the worker reported in its answer. These are added up per request and node, and printed in the `info` summary: `done: 9 tokens in 5.9 s = 1.5 tok/s (stop) | local compute 2.9 s | worker-1 net 0.4 s / compute 2.9 s | worker-2 net 0.4 s / compute 3.0 s`. In Docker on this Mac the computing, not the network, takes most of the time, as measured in Phase 2.1.
+- **Token numbers:** `token=N` is the N-th pass through the model: 0 = the whole prompt at once, 1 = the first new token, ... A `produced` line carries the number of the pass that made it, so `grep "token=5"` shows one complete step.
+- **Checked in Docker:** with `LOG_LEVEL=debug`, `grep "req=cd116308 token=5 layer=6 "` over the three containers shows the master's pick and split and both workers running exactly the experts they were sent. At `info`, a request prints 2 lines (received, done).
+- Tests: `tests/test_logs.py` (format, JSON fields, bad settings; with the model: following one token from the master to the worker, the prompt being one call per node per layer, the summary, and `info` printing only two lines per request).
+- Fixed on the way: an empty log collector counted as "no log function" (`log or default`), so tests lost their log lines; now `is None` is checked.
+
 #### Phase 3.2 — Live events for the UI
 
 **Goal:** the master sends a live stream of what is happening.

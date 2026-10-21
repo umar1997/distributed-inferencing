@@ -22,6 +22,7 @@ from transformers import AutoConfig
 
 from moe_dist import __version__
 from moe_dist.config import Settings
+from moe_dist.logs import info_logger
 from moe_dist.experts.dispatcher import serve_forward
 from moe_dist.experts.loader import load_experts, model_dir
 from moe_dist.experts.placement import parse_expert_ids
@@ -31,9 +32,9 @@ from moe_dist.worker.membership import Membership
 
 
 class WorkerState:
-    def __init__(self, settings: Settings, log=print):
+    def __init__(self, settings: Settings, log=None):
         self.settings = settings
-        self.log = log
+        self.log = log if log is not None else info_logger()
         self.started = time.time()
         self.parts = None  # {layer: ExpertSlice} once loaded
         self.act_fn = None
@@ -71,7 +72,7 @@ def _stop_process():
 def create_app(settings: Settings | None = None, log=None) -> FastAPI:
     settings = settings or Settings()
     if log is None:
-        log = lambda text: print(f"{settings.node_id}: {text}", flush=True)  # noqa: E731
+        log = info_logger()
     state = WorkerState(settings, log)
     membership = Membership(settings, state, log) if settings.master_url() else None
 

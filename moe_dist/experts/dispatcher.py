@@ -18,15 +18,17 @@ in parallel cannot change the result.
 """
 
 import contextvars
+import logging
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 from torch import nn
 
 from moe_dist.experts.compute import EXACT, FAST, MODES, ExactResult, Pairs, combine_exact, plan_pairs, run_pairs
+from moe_dist.logs import get_logger
 from moe_dist.transport import codec
 from moe_dist.transport.client import NodeError
 
@@ -37,6 +39,8 @@ class RequestInfo:
 
     request_id: str
     token_index: int = -1  # forward pass number: 0 = the prompt, 1 = first new token, ...
+    # Per node, added up over the request: calls, ms waited for answers, ms the node said it computed.
+    node_time: dict = field(default_factory=lambda: defaultdict(Counter))
 
 
 # A "context variable" is a global that each request (thread / async task) sees separately,
@@ -44,9 +48,13 @@ class RequestInfo:
 current_request: contextvars.ContextVar[RequestInfo | None] = contextvars.ContextVar("current_request", default=None)
 
 
+log = get_logger()
+
+
 @contextmanager
-def request_scope(request_id: str):
-    info = RequestInfo(request_id)
+def request_scope(request: "str | RequestInfo"):
+    """Inside this block, the dispatcher (and every log line) knows which request it works for."""
+    info = request if isinstance(request, RequestInfo) else RequestInfo(request)
     token = current_request.set(info)
     try:
         yield info
@@ -76,6 +84,12 @@ def serve_forward(node_id: str, parts: dict, act_fn, message: bytes) -> bytes:
         "compute_ms": round(compute_ms, 3),
         "experts_run": sorted(set(pairs.expert.tolist())),
     }
+    if log.isEnabledFor(logging.DEBUG):
+        rows = hidden.shape[0]
+        log.debug(f"ran experts {_short(reply['experts_run'])} on {rows} token{'s' if rows != 1 else ''} "
+                  f"in {compute_ms:.1f} ms",
+                  extra={"req": header.get("request_id"), "token": header.get("token_index"), "layer": layer,
+                         "fields": {"experts": reply["experts_run"], "rows": rows, "compute_ms": round(compute_ms, 3)}})
     return codec.encode(reply, {"out": out})
 
 
@@ -127,6 +141,9 @@ class ExpertDispatcher(nn.Module):
         if info is not None and self.first_layer:
             info.token_index += 1
         pairs = plan_pairs(top_k_index, top_k_weights)
+        debug = log.isEnabledFor(logging.DEBUG)
+        if debug:
+            self._log_picks(top_k_index, pairs)
         owner = self.owner_of[pairs.expert]
         if (owner < 0).any():
             raise RuntimeError(f"layer {self.layer}: no node holds experts {sorted(set(pairs.expert[owner < 0].tolist()))}")
@@ -157,14 +174,24 @@ class ExpertDispatcher(nn.Module):
             )
             work.append((node_id, keep, needed, message, torch.unique(mine.expert).tolist()))
 
-        for (node_id, keep, needed, message, _), reply in zip(work, self._send(work)):
+        if debug:
+            log.debug("sending " + ", ".join(
+                f"{_short(experts)} → {'local' if isinstance(self.nodes[node_id], LocalNode) else node_id}"
+                for node_id, _, _, _, experts in work), extra={"layer": self.layer})
+        start = time.perf_counter()
+        replies = self._send(work)
+        total_ms = (time.perf_counter() - start) * 1000
+        timings = []  # (node_id, waited ms, compute ms)
+        for (node_id, keep, needed, message, _), (reply, waited_ms) in zip(work, replies):
             self.stats.update(calls=1, bytes_sent=len(message), bytes_received=len(reply))
-            _, tensors = codec.decode(reply)
+            reply_header, tensors = codec.decode(reply)
+            timings.append((node_id, waited_ms, reply_header["compute_ms"]))
             if self.combine_mode == EXACT:
                 out_rows[keep] = tensors["out"]
             else:
                 result.index_add_(0, needed, tensors["out"])
 
+        self._record_times(info, timings, total_ms, debug)
         if self.combine_mode == FAST:
             return result
         experts, counts = torch.unique_consecutive(pairs.expert, return_counts=True)
@@ -186,11 +213,45 @@ class ExpertDispatcher(nn.Module):
         }
         return [local[node_id] if node_id in local else pending[node_id].result() for node_id, *_ in work]
 
-    def _call(self, node_id: str, message: bytes, experts: list[int]) -> bytes:
+    def _log_picks(self, top_k_index: torch.Tensor, pairs):
+        tokens = top_k_index.shape[0]
+        if tokens == 1:
+            log.debug(f"router picked experts {sorted(top_k_index[0].tolist())}", extra={"layer": self.layer})
+        else:  # the prompt: all its tokens at once
+            log.debug(f"router picked {pairs.expert.numel()} (token, expert) pairs for {tokens} tokens, "
+                      f"{torch.unique(pairs.expert).numel()} different experts", extra={"layer": self.layer})
+
+    def _record_times(self, info, timings, total_ms: float, debug: bool):
+        """Network time for a call = how long the master waited minus what the node says it computed."""
+        if info is not None:
+            for node_id, waited_ms, compute_ms in timings:
+                local = isinstance(self.nodes[node_id], LocalNode)
+                info.node_time[node_id].update(calls=1, compute_ms=compute_ms,
+                                               net_ms=0 if local else max(0.0, waited_ms - compute_ms))
+        if debug and timings:
+            remote = [t for t in timings if not isinstance(self.nodes[t[0]], LocalNode)]
+            if remote:
+                node_id, waited_ms, compute_ms = max(remote, key=lambda t: t[1])
+                slowest = f"slowest: {node_id}, net {max(0.0, waited_ms - compute_ms):.1f} ms + compute {compute_ms:.1f} ms"
+            else:
+                slowest = "all local"
+            log.debug(f"all results back in {total_ms:.1f} ms ({slowest})", extra={
+                "layer": self.layer, "fields": {"total_ms": round(total_ms, 3), "nodes": {
+                    n: {"waited_ms": round(w, 3), "compute_ms": c} for n, w, c in timings}}})
+
+    def _call(self, node_id: str, message: bytes, experts: list[int]) -> tuple[bytes, float]:
+        """Send one node its message; returns the answer and how long it took (ms)."""
+        start = time.perf_counter()
         try:
-            return self.nodes[node_id].forward(message)
+            reply = self.nodes[node_id].forward(message)
+            return reply, (time.perf_counter() - start) * 1000
         except NodeError as exc:
             # Never skip the missing experts silently: that would quietly give worse text.
             what = "stopped responding" if exc.unreachable else "failed"
             raise NodeError(f"{node_id} {what}; experts {experts} in layer {self.layer} are unavailable ({exc})",
                             node_id, exc.unreachable) from exc
+
+
+def _short(ids: list[int]) -> str:
+    """[3, 7] -> '[3,7]' (compact, for log lines)."""
+    return "[" + ",".join(str(i) for i in ids) + "]"

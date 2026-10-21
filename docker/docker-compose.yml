@@ -22,6 +22,8 @@ x-env: &env
   MODEL_REVISION: ffec3c35bdfd97a06f0b4cd5fcc92cd9b1584445
   DTYPE: ${DTYPE:-bf16}
   CLUSTER_TOKEN: ${CLUSTER_TOKEN:-change-me-dev-token}
+  LOG_LEVEL: ${LOG_LEVEL:-info}  # debug = one line per token per layer
+  LOG_FORMAT: ${LOG_FORMAT:-pretty}  # or json
 
 x-worker-env: &worker-env
   <<: *env

@@ -19,14 +19,18 @@ from concurrent.futures import ThreadPoolExecutor
 from transformers import AutoConfig
 
 from moe_dist.config import Settings
-from moe_dist.experts.dispatcher import request_scope
+from moe_dist.experts.dispatcher import RequestInfo, request_scope
 from moe_dist.experts.loader import model_dir
 from moe_dist.experts.placement import Placement, parse_expert_ids
+from moe_dist.logs import get_logger, info_logger
 from moe_dist.master.controller import USABLE, Controller
 from moe_dist.master.generation import GenerationRequest, GenerationSession, RequestQueue
 from moe_dist.master.model_loader import install_dispatchers, load_shared_model, local_node
 from moe_dist.models import adapter_for
+from moe_dist.models.catalog import short_name
 from moe_dist.transport.client import NodeError
+
+log = get_logger()
 
 
 class NotReady(RuntimeError):
@@ -38,9 +42,9 @@ class NotReady(RuntimeError):
 
 
 class Engine:
-    def __init__(self, settings: Settings, log=print):
+    def __init__(self, settings: Settings, log=None):
         self.settings = settings
-        self.log = log
+        self.log = log if log is not None else info_logger()
         self.adapter = self.model = self.tokenizer = None
         self.controller: Controller | None = None
         self.own_experts: list[int] = []
@@ -151,36 +155,55 @@ class Engine:
         self.queue.enter()
         try:
             self._prepare()
-            request_id = uuid.uuid4().hex[:8]
-            session = GenerationSession(self.model, self.tokenizer, request, request_id, self._session_closed,
-                                        lambda work: self._run_request(request_id, work))
+            info = RequestInfo(uuid.uuid4().hex[:8])
+            session = GenerationSession(self.model, self.tokenizer, request, info.request_id, self._session_closed,
+                                        lambda work: self._run_request(info, work))
+            session.info = info
             room = self.max_context - len(session.prompt_tokens)
             if room <= 0:
                 raise ValueError(f"the prompt is {len(session.prompt_tokens)} tokens; this model reads at most "
                                  f"{self.max_context}")
             request.max_new_tokens = min(request.max_new_tokens, room)
+            sampling = "greedy" if request.temperature == 0 else f"temperature={request.temperature} top_p={request.top_p}"
+            log.info(f"request received: prompt_tokens={len(session.prompt_tokens)} model={short_name(self.settings.model_id)} "
+                     f"max_tokens={request.max_new_tokens} {sampling}" + (f" stop={request.stop}" if request.stop else ""),
+                     extra={"req": info.request_id})
         except BaseException:
             self.queue.leave()
             raise
         session.started = time.perf_counter()
         return session
 
-    def _run_request(self, request_id: str, work):
-        """Run generate() with the request id set, and count a worker that stopped answering as dead."""
-        with request_scope(request_id):
+    def _run_request(self, info: RequestInfo, work):
+        """Run generate() with the request known to the dispatchers, and count a worker that stopped answering as dead."""
+        with request_scope(info):
             try:
                 return work()
             except NodeError as exc:
                 if exc.unreachable:
                     self.controller.call_failed(exc.node_id, str(exc))
-                self.log(f"request {request_id} stopped: {exc}")
+                log.warning(f"stopped: {exc}", extra={"req": info.request_id})
                 raise
 
     def _session_closed(self, session: GenerationSession):
-        seconds = time.perf_counter() - session.started
-        self.log(f"request {session.request_id} done: {len(session.output_tokens)} tokens in {seconds:.1f} s "
-                 f"({session.finish_reason or 'stopped early'})")
+        log.info(self.summary(session), extra={"req": session.request_id, "fields": {
+            "tokens": len(session.output_tokens), "seconds": round(time.perf_counter() - session.started, 3),
+            "finish_reason": session.finish_reason,
+            "node_time_ms": {n: dict(t) for n, t in session.info.node_time.items()}}})
         self.queue.leave()
+
+    def summary(self, session: GenerationSession) -> str:
+        """'done: 64 tokens in 8.6 s = 7.4 tok/s | local compute 2.1 s | worker-1 net 2.3 s / compute 0.9 s'"""
+        seconds = time.perf_counter() - session.started
+        tokens = len(session.output_tokens)
+        parts = [f"done: {tokens} tokens in {seconds:.1f} s = {tokens / seconds if seconds else 0:.1f} tok/s "
+                 f"({session.finish_reason or 'stopped early'})"]
+        for node_id, t in session.info.node_time.items():
+            if node_id in self.local_nodes:
+                parts.append(f"local compute {t['compute_ms'] / 1000:.1f} s")
+            else:
+                parts.append(f"{node_id} net {t['net_ms'] / 1000:.1f} s / compute {t['compute_ms'] / 1000:.1f} s")
+        return " | ".join(parts)
 
     @property
     def max_context(self) -> int:

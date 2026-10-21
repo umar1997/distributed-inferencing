@@ -11,15 +11,20 @@ Terms:
 - stop: texts that end the answer when they appear (they are not included in the answer).
 """
 
+import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass, field
 
 import torch
 from transformers import StoppingCriteria, StoppingCriteriaList
 from transformers.generation.streamers import BaseStreamer
 
+from moe_dist.logs import get_logger
 from moe_dist.reference import build_inputs
+
+log = get_logger()
 
 
 @dataclass
@@ -124,6 +129,7 @@ class GenerationSession:
         self._closed = False
         self._thread: threading.Thread | None = None
         self.started = 0.0  # set by the engine when it is this request's turn
+        self.info = None  # RequestInfo: request id, token number, time per node (set by the engine)
 
     def close(self):
         """Stop generating (if still running) and let the next request in. Safe to call twice."""
@@ -178,6 +184,8 @@ class GenerationSession:
                 if kind == "token":
                     self.output_tokens.append(value)
                     text = self.tokenizer.decode(self.output_tokens, skip_special_tokens=True)
+                    if log.isEnabledFor(logging.DEBUG):
+                        self._log_token(value)
                     cut = find_stop(text, stop)
                     if cut >= 0:
                         self.text, self.finish_reason = text[:cut], "stop"
@@ -204,6 +212,14 @@ class GenerationSession:
                 return
         finally:
             self.close()
+
+    def _log_token(self, token: int):
+        seconds = time.perf_counter() - self.started
+        n = len(self.output_tokens)
+        log.debug(f"produced {self.tokenizer.decode([token])!r} (tok/s so far: {n / seconds if seconds else 0:.1f})",
+                  # token=N is the forward pass that made it (0 = the pass over the prompt), so this line
+                  # matches the layer lines with the same token number.
+                  extra={"req": self.request_id, "token": n - 1, "fields": {"token_id": token}})
 
     def _eos_ids(self) -> set[int]:
         eos = self.model.generation_config.eos_token_id

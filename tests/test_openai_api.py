@@ -6,6 +6,7 @@ so the model is in memory only once.
 """
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -214,8 +215,9 @@ def test_requests_wait_in_line_and_all_get_answers(cluster, client):
 
 
 @pytest.mark.model
-def test_a_client_that_goes_away_frees_the_master(cluster, client):
+def test_a_client_that_goes_away_frees_the_master(cluster, client, caplog):
     master, _ = cluster
+    caplog.set_level(logging.INFO, logger="moe")
     body = {"messages": [{"role": "user", "content": "Write a long story about a lighthouse."}],
             "temperature": 0, "max_tokens": 400, "stream": True}
     with httpx.stream("POST", f"{master.url}/v1/chat/completions", json=body, timeout=120) as reply:
@@ -223,7 +225,7 @@ def test_a_client_that_goes_away_frees_the_master(cluster, client):
             if i > 6:
                 break  # leave in the middle of the answer
     wait_for(lambda: not master.app.state.engine.queue.running, 30, "master free again")
-    assert master.logs.has("(stopped early)")
+    assert any("(stopped early)" in r.getMessage() for r in caplog.records)  # the request summary line
     answer = ask(client, GOLDEN["prompts"][0], temperature=0, max_tokens=3)
     assert answer.usage.completion_tokens == 3
 

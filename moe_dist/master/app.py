@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from moe_dist import __version__
 from moe_dist.config import Settings
+from moe_dist.logs import info_logger
 from moe_dist.master.engine import Engine, NotReady
 from moe_dist.master.generation import Busy
 from moe_dist.master.openai_api import error, make_router
@@ -37,7 +38,7 @@ class GenerateRequest(BaseModel):
 def create_app(settings: Settings | None = None, log=None) -> FastAPI:
     settings = settings or Settings()
     if log is None:
-        log = lambda text: print(f"{settings.node_id}: {text}", flush=True)  # noqa: E731
+        log = info_logger()
     engine = Engine(settings, log=log)
 
     @asynccontextmanager

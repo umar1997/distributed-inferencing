@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 
 from moe_dist import __version__
+from moe_dist.logs import info_logger
 from moe_dist.transport.client import auth_headers
 
 
@@ -47,10 +48,10 @@ def ram_free_gb() -> float | None:
 
 
 class Membership:
-    def __init__(self, settings, state, log=print):
+    def __init__(self, settings, state, log=None):
         self.settings = settings
         self.state = state  # WorkerState: ready, expert ids, calls served
-        self.log = log
+        self.log = log if log is not None else info_logger()
         self.master = settings.master_url()
         self.epoch: str | None = None  # set by a successful registration
         self.interval = settings.heartbeat_interval_s

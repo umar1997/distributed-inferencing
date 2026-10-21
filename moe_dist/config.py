@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     max_queue: int = 16  # master: requests allowed to wait while one runs; more get 429 "busy"
     default_max_tokens: int = 512  # master: answer length when a request does not say
     torch_threads: int = 0  # 0 -> PyTorch's default (all cores)
+    log_level: str = "info"  # info / debug (debug = one line per token per layer)
+    log_format: str = "pretty"  # pretty / json
 
     # Worker: where to register, and the address the master should use to reach this worker.
     master_addr: str = ""  # e.g. "192.168.1.10:8000" or "http://master:8000"

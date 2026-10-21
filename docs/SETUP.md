@@ -160,7 +160,7 @@ docker stats --no-stream
 docker compose -f docker/docker-compose.yml down
 ```
 
-Settings you can change when starting: `DTYPE=fp32` (default `bf16`), `MASTER_THREADS=4`, `WORKER_THREADS=2`, `COMBINE_MODE=exact|fast`, `CLUSTER_TOKEN=...`, and the health timings `HEARTBEAT_INTERVAL_S=2`, `PING_INTERVAL_S=3`, `SLOW_RTT_MS=250`, `DEAD_AFTER_S=15`, `RECOVER_AFTER_OK=3`, `EXPERT_CALL_TIMEOUT_S=5`, e.g. `DTYPE=fp32 docker compose -f docker/docker-compose.yml up -d`.
+Settings you can change when starting: `DTYPE=fp32` (default `bf16`), `MASTER_THREADS=4`, `WORKER_THREADS=2`, `COMBINE_MODE=exact|fast`, `CLUSTER_TOKEN=...`, `LOG_LEVEL=info|debug`, `LOG_FORMAT=pretty|json`, and the health timings `HEARTBEAT_INTERVAL_S=2`, `PING_INTERVAL_S=3`, `SLOW_RTT_MS=250`, `DEAD_AFTER_S=15`, `RECOVER_AFTER_OK=3`, `EXPERT_CALL_TIMEOUT_S=5`, e.g. `DTYPE=fp32 docker compose -f docker/docker-compose.yml up -d`.
 
 **Using it from other tools (Phase 2.3).** The master speaks the same API as OpenAI, Ollama and vLLM, at `http://localhost:8000/v1`. With the official Python client:
 
@@ -194,6 +194,24 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.8gb.yml up 
 .venv/bin/python scripts/memory_check.py     # ~15 minutes on a Mac; ends with "OK: ..." or "FAILED: ..."
 docker compose -f docker/docker-compose.yml up -d   # back to no limits
 ```
+
+**Following a token through the cluster (Phase 3.1).** Start with `LOG_LEVEL=debug` to get one line per token per layer on every node, then pick a request and a token:
+
+```bash
+LOG_LEVEL=debug docker compose -f docker/docker-compose.yml up -d
+# ... send a prompt, then:
+docker compose -f docker/docker-compose.yml logs --no-log-prefix | grep "req=cd116308 token=5 layer=6 " | sort
+```
+
+```
+12:39:18.700 master   DEBUG req=cd116308 token=5 layer=6 router picked experts [5, 6, 10, 12, 15, 20, 21, 27]
+12:39:18.700 master   DEBUG req=cd116308 token=5 layer=6 sending [5,6] → local, [10,12,15,20] → worker-1, [21,27] → worker-2
+12:39:18.710 worker-2 DEBUG req=cd116308 token=5 layer=6 ran experts [21,27] on 1 token in 8.8 ms
+12:39:18.715 master   DEBUG req=cd116308 token=5 layer=6 all results back in 15.0 ms (slowest: worker-1, net 1.2 ms + compute 13.7 ms)
+12:39:18.715 worker-1 DEBUG req=cd116308 token=5 layer=6 ran experts [10,12,15,20] on 1 token in 13.7 ms
+```
+
+`token=0` is the pass over the whole prompt, `token=1` the first new token, and so on. At the normal `LOG_LEVEL=info`, each answer writes just two lines: `request received` and a `done:` summary with the speed and, per node, network time vs computing time. `LOG_FORMAT=json` writes the same as one JSON object per line.
 
 **Workers coming and going (Phase 2.2).** Each worker registers itself with the master and then sends a heartbeat ("I'm alive") every 2 s; the master also pings each worker every 3 s. `moe-node status` shows each worker as `joining`, `healthy`, `slow`, `dead` or `left`. Things to try:
 
