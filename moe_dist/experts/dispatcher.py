@@ -41,6 +41,8 @@ class RequestInfo:
     token_index: int = -1  # forward pass number: 0 = the prompt, 1 = first new token, ...
     # Per node, added up over the request: calls, ms waited for answers, ms the node said it computed.
     node_time: dict = field(default_factory=lambda: defaultdict(Counter))
+    # For the live UI (master/events.py): this step's routing, one entry per layer. None = not collecting.
+    routing: list | None = None
 
 
 # A "context variable" is a global that each request (thread / async task) sees separately,
@@ -140,6 +142,8 @@ class ExpertDispatcher(nn.Module):
         info = current_request.get()
         if info is not None and self.first_layer:
             info.token_index += 1
+            if info.routing is not None:
+                info.routing = []  # a new step starts
         pairs = plan_pairs(top_k_index, top_k_weights)
         debug = log.isEnabledFor(logging.DEBUG)
         if debug:
@@ -192,6 +196,8 @@ class ExpertDispatcher(nn.Module):
                 result.index_add_(0, needed, tensors["out"])
 
         self._record_times(info, timings, total_ms, debug)
+        if info is not None and info.routing is not None:
+            info.routing.append(self._routing(top_k_index, top_k_weights, pairs, timings, total_ms))
         if self.combine_mode == FAST:
             return result
         experts, counts = torch.unique_consecutive(pairs.expert, return_counts=True)
@@ -220,6 +226,20 @@ class ExpertDispatcher(nn.Module):
         else:  # the prompt: all its tokens at once
             log.debug(f"router picked {pairs.expert.numel()} (token, expert) pairs for {tokens} tokens, "
                       f"{torch.unique(pairs.expert).numel()} different experts", extra={"layer": self.layer})
+
+    def _routing(self, top_k_index, top_k_weights, pairs, timings, total_ms: float) -> dict:
+        """One layer of one step, for the UI: which experts, on which node, how long it took."""
+        def node_of(expert: int) -> str:
+            return self.node_ids[int(self.owner_of[expert])]
+
+        if top_k_index.shape[0] == 1:  # one new token: its experts in the router's order, with weights
+            experts = [{"id": int(e), "node": node_of(int(e)), "weight": round(float(w), 4)}
+                       for e, w in zip(top_k_index[0].tolist(), top_k_weights[0].float().tolist())]
+        else:  # the prompt: every expert used, with how many of the prompt's tokens picked it
+            ids, counts = torch.unique(pairs.expert, return_counts=True)
+            experts = [{"id": int(e), "node": node_of(int(e)), "count": int(c)} for e, c in zip(ids.tolist(), counts.tolist())]
+        slowest = max(timings, key=lambda t: t[1])[0] if timings else None
+        return {"layer": self.layer, "experts": experts, "wait_ms": round(total_ms, 3), "slowest": slowest}
 
     def _record_times(self, info, timings, total_ms: float, debug: bool):
         """Network time for a call = how long the master waited minus what the node says it computed."""

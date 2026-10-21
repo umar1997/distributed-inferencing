@@ -143,7 +143,7 @@ def test_api_nodes_and_placement():
         assert worker["status"] == "healthy" and worker["rtt_now_ms"] is not None and worker["cpu_cores"] > 0
         placement = httpx.get(f"{m.url}/api/placement").json()
         assert placement["coverage"] == "ok"
-        assert placement["owners"]["0"]["3"] == ["master"] and placement["owners"]["23"]["31"] == ["worker-1"]
+        assert placement["nodes_by_layer"]["0"][3] == "master" and placement["nodes_by_layer"]["23"][31] == "worker-1"
 
 
 def test_moe_node_status_prints_the_table(capsys):

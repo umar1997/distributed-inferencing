@@ -621,6 +621,15 @@ Example output (`LOG_LEVEL=debug`, `LOG_FORMAT=pretty`):
 
 **How to test it:** `curl -N localhost:8000/api/events` while chatting → events appear; a test checks the event format.
 
+**Results (done 2026-10-21, 36 GB Mac):**
+- Built: `master/events.py` (`EventHub`: every listener gets every event; `GET /api/events` as Server-Sent Events), routing capture in the dispatcher, events from the engine and the controller. `/api/placement` now gives, per layer, the node that runs each expert (`nodes_by_layer`), the same view the `hello` event carries for the UI's grid.
+- **Events:** `hello` on connecting (model, layers, number of experts, placement, nodes); `node_update` on every health change and every 5 s; `request_start`; one `token` event per new token with **all 24 layers in one event**: per layer the 8 experts with the node that ran each and the router's weight, how long the layer waited, and the slowest node (for the pass over the prompt: every expert used, with how many prompt tokens picked it); `request_end` with the summary from the logs. One token event is ~11 KB.
+- **No cost when nobody watches:** routing details are only collected while at least one listener is connected. A listener that cannot keep up loses events (counted) instead of slowing the model down. A token event is sent from inside generation, right after the step that made the token, so it carries exactly that step's routing.
+- Special tokens (the end marker `<|end_of_text|>`) come with empty text and `special: true`, so the UI doesn't print them.
+- With `API_KEY` set, the stream needs `?key=...` (a browser's EventSource cannot send headers).
+- **Checked in Docker:** `curl -N localhost:8000/api/events` during a chat shows `hello, request_start, node_update, token × 9, request_end, node_update`; e.g. token 2, layer 6: experts 7 and 9 on the master, 17, 12, 20 on worker-1, 29, 31, 28 on worker-2, with weights, 14 ms, slowest worker-1.
+- Tests: `tests/test_events.py` (hub, slow listener, stream start and keep-alive; with the model: every token with all 24 layers, nodes matching the placement, weights adding up to 1, the text matching the chat answer, a `node_update`). One test in the API / failure / log files failed once in a combined run and then passed 4 runs in a row; it is noted here to watch, not yet found.
+
 #### Phase 3.3 — React UI
 
 **Goal:** a chat window plus a live view of the distributed system.

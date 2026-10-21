@@ -213,6 +213,12 @@ docker compose -f docker/docker-compose.yml logs --no-log-prefix | grep "req=cd1
 
 `token=0` is the pass over the whole prompt, `token=1` the first new token, and so on. At the normal `LOG_LEVEL=info`, each answer writes just two lines: `request received` and a `done:` summary with the speed and, per node, network time vs computing time. `LOG_FORMAT=json` writes the same as one JSON object per line.
 
+**Live events (Phase 3.2).** The master also sends a live stream of what is happening (for the web page in Phase 3.3): node health, each request's start and end, and for every new token which experts each layer used and which node ran them. To watch it raw:
+
+```bash
+curl -N localhost:8000/api/events
+```
+
 **Workers coming and going (Phase 2.2).** Each worker registers itself with the master and then sends a heartbeat ("I'm alive") every 2 s; the master also pings each worker every 3 s. `moe-node status` shows each worker as `joining`, `healthy`, `slow`, `dead` or `left`. Things to try:
 
 ```bash

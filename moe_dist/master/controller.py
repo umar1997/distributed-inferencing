@@ -83,6 +83,7 @@ class Controller:
         self._stop = threading.Event()
         self._pinging: set[str] = set()
         self._refused: dict[str, str] = {}  # node_id -> last refusal reason
+        self.on_change = None  # called after every state change (the engine sends a live event)
         self._pinger = ThreadPoolExecutor(max_workers=8, thread_name_prefix="ping")
 
     # --- what workers send -------------------------------------------------------------------
@@ -305,4 +306,6 @@ class Controller:
         self.events.append((time.time(), record.node_id, old, status, reason))
         self.log(f"{record.node_id} status: {old} → {status} ({reason})" if old != status
                  else f"{record.node_id} status: {status} ({reason})")
+        if self.on_change is not None:
+            self.on_change()
 

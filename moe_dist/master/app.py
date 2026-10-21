@@ -5,6 +5,7 @@
     GET  /health                 loaded / ready, missing experts, nodes taking part
     GET  /api/nodes              every node with its health state, round trips, RAM, experts
     GET  /api/placement          layer -> expert -> node, and the coverage result
+    GET  /api/events             live events for the UI (Server-Sent Events, master/events.py)
     POST /internal/register      a worker joins           (cluster token needed)
     POST /internal/heartbeat     a worker says "I'm alive" (cluster token needed)
     POST /internal/leave         a worker says goodbye     (cluster token needed)
@@ -13,12 +14,13 @@
 
 import platform
 import threading
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from moe_dist import __version__
@@ -96,26 +98,29 @@ def create_app(settings: Settings | None = None, log=None) -> FastAPI:
 
     @app.get("/api/nodes")
     def nodes():
-        own = {
-            "node_id": settings.node_id, "role": "master", "address": "", "status": "healthy" if engine.loaded else "joining",
-            "reason": engine.error or ("loaded" if engine.loaded else "loading"), "ready": engine.loaded,
-            "experts": {"all_layers": engine.own_experts},
-        }
-        workers = engine.controller.describe() if engine.controller else []
-        problem = engine.missing_report()
-        return {"nodes": [own, *workers], "coverage": "ok" if engine.loaded and not problem else (problem or "loading")}
+        return engine.nodes_view()
+
+    @app.get("/api/events")
+    def events(request: Request, key: str = ""):
+        """Live events for the UI (master/events.py). With API_KEY set: /api/events?key=... (browsers'
+        EventSource cannot send headers)."""
+        if settings.api_key and key != settings.api_key and \
+                request.headers.get("authorization") != f"Bearer {settings.api_key}":
+            return error(401, "wrong or missing API key", "authentication_error", "invalid_api_key")
+        hello = {"type": "hello", "time": round(time.time(), 3), "model": settings.model_id, "node_id": settings.node_id,
+                 "layers": engine.adapter.moe_layers() if engine.adapter else [],
+                 "num_experts": engine.adapter.num_experts if engine.adapter else 0,
+                 "placement": engine.placement_view(), **engine.nodes_view()}
+        return StreamingResponse(engine.events.stream([hello]), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/api/placement")
     def placement():
+        """Per layer, the node that runs each expert (index = expert number), and the coverage result."""
         if not engine.loaded:
             raise HTTPException(503, engine.error or "the master is still starting")
-        current, _, _ = engine._current()
-        return {
-            "layers": current.layers,
-            "num_experts": current.num_experts,
-            "owners": {str(layer): {str(e): nodes for e, nodes in experts.items()} for layer, experts in current.owners.items()},
-            "coverage": engine.missing_report() or "ok",
-        }
+        return {"num_experts": engine.adapter.num_experts, "nodes_by_layer": engine.placement_view(),
+                "coverage": engine.missing_report() or "ok"}
 
     @app.post("/internal/register")
     async def register(request: Request):

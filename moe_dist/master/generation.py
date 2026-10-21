@@ -73,10 +73,15 @@ class RequestQueue:
 
 
 class _TokenStreamer(BaseStreamer):
-    """Receives each new token from generate() and puts it on a queue (the first call is the prompt)."""
+    """Receives each new token from generate() and puts it on a queue (the first call is the prompt).
 
-    def __init__(self, events: queue.Queue):
+    `on_token` (if set) is called right here, in generate()'s own thread, before the next step
+    starts: the moment the step that made this token is complete (used for the live UI events).
+    """
+
+    def __init__(self, events: queue.Queue, on_token=None):
         self.events = events
+        self.on_token = on_token
         self.prompt_seen = False
 
     def put(self, value):
@@ -84,6 +89,8 @@ class _TokenStreamer(BaseStreamer):
             self.prompt_seen = True
             return
         for token in value.reshape(-1).tolist():
+            if self.on_token is not None:
+                self.on_token(token)
             self.events.put(("token", token))
 
     def end(self):
@@ -130,6 +137,7 @@ class GenerationSession:
         self._thread: threading.Thread | None = None
         self.started = 0.0  # set by the engine when it is this request's turn
         self.info = None  # RequestInfo: request id, token number, time per node (set by the engine)
+        self.on_token = None  # called in generate()'s thread for each new token (set by the engine)
 
     def close(self):
         """Stop generating (if still running) and let the next request in. Safe to call twice."""
@@ -144,7 +152,7 @@ class GenerationSession:
     def _generate_kwargs(self, events: queue.Queue) -> dict:
         r = self.request
         stop_check = _StopCheck(self.tokenizer, len(self.prompt_tokens), r.stop, self._cancelled)
-        kwargs = dict(**self.inputs, max_new_tokens=r.max_new_tokens, streamer=_TokenStreamer(events),
+        kwargs = dict(**self.inputs, max_new_tokens=r.max_new_tokens, streamer=_TokenStreamer(events, self.on_token),
                       stopping_criteria=StoppingCriteriaList([stop_check]))
         if r.temperature == 0:
             # The same settings as reference.greedy_generate: always the most likely token.
