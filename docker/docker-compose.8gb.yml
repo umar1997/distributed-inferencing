@@ -1,0 +1,28 @@
+# Phase 2.4: the same cluster inside a small laptop's memory budget (docs/AVAILABLE_MODELS.md 4.5).
+# Used on top of the normal file:
+#
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.8gb.yml up -d
+#   .venv/bin/python scripts/memory_check.py
+#
+# Each container gets a hard memory limit. memswap_limit = mem_limit means "no swap": a container
+# that needs more than its limit is stopped by Linux ("OOMKilled") instead of quietly getting slow,
+# so the check is honest. bf16 only (fp32 needs twice the memory).
+
+services:
+  master:
+    environment:
+      DTYPE: bf16
+    mem_limit: 2.5g
+    memswap_limit: 2.5g
+
+  worker-1:
+    environment:
+      DTYPE: bf16
+    mem_limit: 2g
+    memswap_limit: 2g
+
+  worker-2:
+    environment:
+      DTYPE: bf16
+    mem_limit: 2g
+    memswap_limit: 2g

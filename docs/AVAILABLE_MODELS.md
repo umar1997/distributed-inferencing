@@ -132,21 +132,23 @@ This is why the idea works: almost all of the memory is in the experts, and the 
 |---|---|---|---|
 | KV cache per token (bf16, master only) | 48 KB | 192 KB | 96 KB |
 | KV cache for 4,096 tokens | ~0.2 GB | ~0.8 GB | ~0.4 GB |
-| Python + PyTorch + Transformers per process | ~0.6–1.0 GB (to be measured in Phase 2) | same | same |
+| Python + PyTorch + Transformers per process | measured (Granite, bf16): ~0.35 GB per worker, ~0.5–0.8 GB on the master | same | same |
 | Data sent per token per layer (bf16) | 2 KB | 4 KB | 4 KB |
 
 The data sent over the network is tiny. **The cost is the number of round trips** (one per layer per token), not the size.
 
-### 4.5 Example placements (to be finalised from real measurements)
+### 4.5 Example placements (Granite measured in Phase 2.4; the others are estimates)
 
 **Granite — Step 2, all 3 containers inside an 8 GB budget (bf16):**
 
-| Container | Holds | Weights | + overhead | Container memory limit |
-|---|---|---|---|---|
-| master | shared parts + experts 0–9 (10 slots) | 0.25 + 0.76 = 1.0 GB | ~1.0 GB | 2.5 GB |
-| worker-1 | experts 10–20 (11 slots) | 0.83 GB | ~0.8 GB | 2 GB |
-| worker-2 | experts 21–31 (11 slots) | 0.83 GB | ~0.8 GB | 2 GB |
-| **Total** | | **2.7 GB** | | **6.5 GB → Docker Desktop limit: 7 GB** |
+| Container | Holds | Weights | Container memory limit | **Measured peak** (Phase 2.4) | Of that: program / file pages (end of run) |
+|---|---|---|---|---|---|
+| master | shared parts + experts 0–9 (10 slots) | 0.25 + 0.76 = 1.0 GB | 2.5 GB | **2.35 GB** (94 %) | 1.30 / 0.98 GB |
+| worker-1 | experts 10–20 (11 slots) | 0.83 GB | 2 GB | **1.87 GB** (94 %, while loading) | 1.15 / 0.39 GB |
+| worker-2 | experts 21–31 (11 slots) | 0.83 GB | 2 GB | **1.87 GB** (94 %, while loading) | 1.15 / 0.38 GB |
+| **Total** | | **2.7 GB** | **6.5 GB** | **6.1 GB** | **3.6 GB program** |
+
+Measured with `docker/docker-compose.8gb.yml` and `scripts/memory_check.py`: all 10 golden prompts + a conversation that reached 1,229 tokens of context. **No container ran out of memory or even reached its limit.** "Program" is the processes' own memory (weights, Python, PyTorch, buffers); "file pages" are parts of files kept in memory (the weight file, libraries), which Linux frees when memory gets short, so the peaks look closer to the limits than the real need. A worker's peak comes from loading (the weights are copied out of the file), after that it uses ~1.55 GB. The master grows with the conversation (attention memory of earlier tokens and working buffers for long messages).
 
 **Qwen1.5-MoE — Step 4, real laptops (bf16).** Laptop C's RAM is still unknown, so this assumes 16 GB:
 

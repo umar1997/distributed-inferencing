@@ -111,3 +111,21 @@ def test_memory_per_container(master):
         assert memory[name] < experts * per_expert_mb + 600, name
     assert memory["moe-master-1"] < shared_mb + 10 * per_expert_mb + 900
     assert memory["moe-master-1"] < full_mb  # the master never holds the full model
+
+
+def test_no_container_ran_out_of_memory(master):
+    """Phase 2.4: with limits (docker-compose.8gb.yml), every container stays below its limit.
+
+    Without limits (the normal compose file) this only checks that nothing was killed.
+    """
+    for name in ("moe-master-1", "moe-worker-1-1", "moe-worker-2-1"):
+        read = lambda f: subprocess.run(["docker", "exec", name, "cat", f"/sys/fs/cgroup/{f}"],  # noqa: E731
+                                        capture_output=True, text=True, check=True).stdout.strip()
+        events = dict(line.split() for line in read("memory.events").splitlines())
+        state = json.loads(subprocess.run(["docker", "inspect", name], capture_output=True, text=True,
+                                          check=True).stdout)[0]["State"]
+        assert events["oom_kill"] == "0" and not state["OOMKilled"], f"{name} ran out of memory"
+        if read("memory.max") != "max":
+            peak, limit = int(read("memory.peak")), int(read("memory.max"))
+            print(f"\n{name}: peak {peak / 2**20:.0f} MB of {limit / 2**20:.0f} MB")
+            assert peak < limit, name

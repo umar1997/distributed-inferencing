@@ -187,6 +187,14 @@ docker run -d --name open-webui --memory 1.5g -p 3000:8080 \
 docker rm -f open-webui    # stop it again (its settings stay in the "open-webui" volume)
 ```
 
+**Small-laptop memory check (Phase 2.4).** The same cluster with a hard memory limit per container (master 2.5 GB, workers 2 GB each, bf16), then a check that runs all golden prompts and a long conversation and reports each container's peak memory:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.8gb.yml up -d
+.venv/bin/python scripts/memory_check.py     # ~15 minutes on a Mac; ends with "OK: ..." or "FAILED: ..."
+docker compose -f docker/docker-compose.yml up -d   # back to no limits
+```
+
 **Workers coming and going (Phase 2.2).** Each worker registers itself with the master and then sends a heartbeat ("I'm alive") every 2 s; the master also pings each worker every 3 s. `moe-node status` shows each worker as `joining`, `healthy`, `slow`, `dead` or `left`. Things to try:
 
 ```bash

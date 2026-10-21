@@ -553,6 +553,22 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 
 **Risks:** the Python + PyTorch base memory is larger than the ~1 GB estimate → reduce threads, make sure nothing loads the full model, or shift experts to the master.
 
+**Results (2026-10-20, 36 GB Mac, Docker Desktop VM 7.75 GB):**
+- Built: `docker/docker-compose.8gb.yml` (added on top of the normal file: limits master 2.5 GB, workers 2 GB each, no swap, bf16), `scripts/memory_check.py` (golden prompts + a long conversation through the OpenAI-style API, then each container's limit, peak, program / file-page memory and out-of-memory counters, read from Linux's per-container bookkeeping, the "cgroup"), test `test_no_container_ran_out_of_memory` in `test_cluster.py`.
+- **"No swap" on purpose:** swap is disk space used as extra memory. With it, a container over its limit would just get slow and the check would pass dishonestly; without it, Linux stops the container ("OOMKilled").
+- **Passed:** all 10 golden prompts identical, a conversation up to **1,229 tokens** of context, **no container ran out of memory or even reached its limit**:
+
+  | Container | Limit | Peak | Program / file pages at the end |
+  |---|---|---|---|
+  | master | 2,560 MB | 2,407 MB | 1,331 / 1,000 MB |
+  | worker-1 | 2,048 MB | 1,916 MB (while loading) | 1,175 / 404 MB |
+  | worker-2 | 2,048 MB | 1,919 MB (while loading) | 1,179 / 384 MB |
+
+  The peaks look close to the limits (94 %), but a large part is file pages, which Linux frees before it would stop a container; the real need ("program") is ~1.3 GB on the master and ~1.2 GB per worker. Peaks are written into AVAILABLE_MODELS.md section 4.5.
+- **Not done exactly as planned:** Docker Desktop's own memory setting was left at 7.75 GB (not lowered to 7 GB), because changing it restarts Docker and all other containers on this Mac. The per-container limits (6.5 GB together) are the stricter check anyway.
+- Speed with limits was ~0.5–0.9 tok/s (golden prompts 409 s; the long conversation's first message, ~1,100 tokens, took ~2 minutes). Not caused by the limits: Linux re-read almost nothing (2 pages) and no limit was reached; it is the Docker-on-Mac slowness from Phase 2.1, plus other containers running at the same time.
+- Side note: the small Granite model answered the questions about the notes wrongly (e.g. "the oldest lighthouse is Ivers, 1924"; the notes say Arden, 1820). That is most likely the model's quality (it has 1 billion parameters), not this system: on every golden prompt our tokens are the same as plain Transformers'. This conversation itself was not compared with plain Transformers.
+
 ---
 
 ### Phase 3 — Step 3: clear logs and the React UI
