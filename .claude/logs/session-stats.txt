@@ -1,0 +1,33 @@
+============================================
+  CLAUDE CODE SESSION STATS
+  Updated: Wed Oct 21 20:36:23 +04 2026
+============================================
+
+CONTEXT / TOKENS
+  Total Input Tokens:        377569
+  Total Output Tokens:       8
+  Context Window Size:       1000000
+  Used %:                    38%
+  Remaining %:               62%
+  Fresh Input Tokens:        2
+  Cache Creation Tokens:     1510
+  Cache Read Tokens:         376057
+  Current Output Tokens:     8
+
+COST & DURATION
+  Total Cost:                $38.21866619999999
+  Session Duration:          2948m 37s
+  API Duration:              78m 2s
+  Lines Added:               6434
+  Lines Removed:             130
+
+RATE LIMITS
+  5-Hour Usage:              55%
+  7-Day Usage:               27%
+
+SESSION INFO
+  Model:                     Opus 5.5
+  Version:                   2.1.289
+  Session ID:                f9563e44-56b2-4de2-8b48-8aa97610f453
+  Session Name:              Distributed MoE inference phase 1.1
+============================================

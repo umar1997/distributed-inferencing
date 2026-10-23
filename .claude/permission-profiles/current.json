@@ -1,0 +1,94 @@
+
+{
+    "$schema_note": "Project-wide config. Personal/secret overrides go in settings.local.json (gitignored). Precedence: deny > ask > allow; most specific rule wins.",
+  
+    "statusLine": {
+      "type": "command",
+      "command": "bash .claude/statusline-command.sh"
+    },  
+    "permissions": {
+      "allow": [
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git branch:*)",
+  
+        "Bash(ls:*)",
+        "Bash(cat:*)",
+        "Bash(grep:*)",
+        "Bash(find:*)",
+        "Bash(cp:*)",
+        "Bash(mkdir:*)",
+        "Bash(touch:*)",
+  
+        "Bash(pytest:*)",
+        "Bash(docker compose up:*)",
+  
+        "Bash(gh pr view:*)",
+        "Bash(gh issue view:*)",
+  
+        "Read(**)",
+        "Edit(**)",
+        "Write(**)"
+      ],
+  
+      "ask": [
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git stash:*)",
+        "Bash(git fetch:*)",
+        "Bash(git push:*)",
+        "Bash(git rebase:*)",
+        "Bash(git checkout:*)",
+        "Bash(git pull:*)",
+        "Bash(git merge:*)",
+  
+        "Bash(mv:*)",
+        "Bash(rm:*)",
+        "Bash(chmod:*)",
+        "Bash(chown:*)",
+        "Bash(ssh:*)",
+  
+        "Bash(npm test:*)",
+        "Bash(npm run:*)",
+        "Bash(uv:*)",
+        "Bash(cargo:*)",
+        "Bash(go:*)",
+  
+        "Bash(npm publish:*)",
+        "Bash(npm install:*)",
+        "Bash(npm ci:*)",
+        "Bash(pnpm:*)",
+        "Bash(yarn:*)",
+        "Bash(pip install:*)",
+        "Bash(uv add:*)",
+        "Bash(poetry:*)",
+        "Bash(docker:*)",
+  
+        "Bash(gh pr create:*)",
+        "Bash(gh pr merge:*)",
+        "Bash(gh issue create:*)",
+        "Bash(gh issue comment:*)",
+        "Bash(gh auth:*)",
+  
+        "Edit(package.json)"
+      ],
+  
+      "deny": [
+        "Bash(rm -rf:*)",
+        "Bash(git push --force:*)",
+        "Bash(git reset --hard:*)",
+        "Bash(gh repo delete:*)",
+  
+        "Read(.env)",
+        "Read(.env.*)",
+        "Read(**/secrets/**)",
+        "Read(**/*.pem)",
+        "Read(**/id_rsa*)",
+  
+        "Write(.env*)",
+        "Write(.git/**)"
+      ]
+    }
+  }
+  
