@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+.claude/
+z__updates.txt
+
 # A laptop's own settings, with the cluster token (docs/LAPTOP_SETUP.md); node.env.example is committed
 node.env
 
