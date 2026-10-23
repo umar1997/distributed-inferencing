@@ -6,7 +6,8 @@ reconnect by themselves. (The OpenAI streaming API uses the same technique.)
 
 Events (every one has "type" and "time"):
 - hello          sent once on connecting: the model, the nodes and the expert placement
-- node_update    all nodes with their health; on every change and every few seconds
+- node_update    all nodes with their health, and the placement of usable nodes (a dead node's
+                 experts show as missing); on every change and every few seconds
 - request_start  {req, prompt_tokens, max_tokens}
 - token          one per generated token: {req, token_index, text, special, layers: [{layer, experts:
                  [{id, node, weight}], wait_ms, slowest}]}, i.e. all layers of that step in one

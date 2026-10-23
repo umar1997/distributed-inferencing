@@ -116,11 +116,12 @@ distributed-inferencing/
 │   │   └── membership.py       # register, heartbeat, re-register loop
 │   └── cli/
 │       └── main.py             # `moe-node serve | join | status | leave` (+ `netcheck` in 4.1)
-├── ui/                         # React + Vite app (served by the master)
+├── ui/                         # React + Vite app (built into the image, served by the master at /)
 │   └── src/
+│       ├── api.ts              # live events + streaming chat
 │       ├── pages/Chat.tsx
 │       ├── pages/System.tsx
-│       └── components/ (NodeMap, ExpertGrid, RoutingView, Stats)
+│       └── components/ (NodeMap, ExpertGrid with the live routing, Stats)
 ├── docker/
 │   ├── Dockerfile              # one image for every node, multi-architecture
 │   ├── certs/                  # optional extra certificates (company security filters)
@@ -647,6 +648,18 @@ Example output (`LOG_LEVEL=debug`, `LOG_FORMAT=pretty`):
 **How to test it:** send a prompt; the grid lights up token by token, and the node colors change when you `docker stop worker-2`. A quick check at phone width.
 
 **Done when:** you can watch one prompt's tokens move across containers in the UI and match them to `docker logs`.
+
+**Results (done 2026-10-21, 36 GB Mac):**
+- Built: `ui/` (React 19 + Vite 8, TypeScript): `src/api.ts` (listens to `/api/events`, streams chat from `/v1/chat/completions`), `pages/Chat.tsx`, `pages/System.tsx`, `components/NodeMap.tsx`, `components/ExpertGrid.tsx` (the grid and the live routing view in one), `components/Stats.tsx`. The master serves the built page at `/` (setting `UI_DIR`; without a built page the API works as before and one log line says so). The Docker image builds the page in a first build stage with Node.js and keeps only the finished files, so running the cluster needs no Node.js. Test: `tests/test_ui.py`.
+- **Layout:** on a wide screen, chat on the left and the live view on the right, so the grid lights up while the answer is written; below 900 px wide, two tabs (Chat / System) and the page scrolls normally. Dark mode follows the computer's setting.
+- **Live view:** node cards (health colour, address, experts, round trip, RAM, CPU, and the reason when not healthy); a banner when experts are missing; the answer as clickable tokens plus a slider to replay any token (it follows the newest token while generating); the grid of layers × experts coloured by node, with the selected token's 8 experts per layer lit (brighter = the router counted it more; for the prompt pass, brighter = picked by more prompt tokens); stats: tokens/s, tokens, average wait per layer, answer time, and per node computing vs network time as bars.
+- **No back doors:** the page only uses `/api/events` and `/v1/chat/completions`, like any other tool.
+- **Checked with a real browser** (Chrome without a window, driven by a script, typing into the page like a person): the grid lights up token by token while the answer streams; replaying token 4 works; at phone width there is no sideways scrolling and the whole grid fits; no errors in the browser.
+- **Matched to the logs:** with `LOG_LEVEL=debug`, the page showed experts `[3, 6, 9, 12, 18, 20, 21, 28]` lit for one token at layer 6, and `docker logs` for that request, token and layer says `router picked experts [3, 6, 9, 12, 18, 20, 21, 28]`. The page shows the exact search label (`logs: req=5330e512 token=3`), because the logs count from the prompt pass (token=0) while the page says "token 1, 2, …".
+- **`docker stop worker-2`:** after ~5 s its card turns yellow (slow), at 15 s red (dead), the banner lists the missing experts 21–31 and the grid shows them in red; `docker start` → all green and ready again ~20 s after the stop.
+- Bugs found with the browser and fixed: (1) the page crashed when a message was sent: two React effects were one-line arrows, so they returned a value React then tried to call as a clean-up function ("destroy is not a function"); (2) the grid did not shrink at phone width (grid columns would not go below their label's width); (3) the grid kept a dead worker's colour, because the placement was only sent on connecting; `node_update` events now carry it.
+
+  ![Chat and live grid](images/ui-chat-and-grid.png)
 
 ---
 

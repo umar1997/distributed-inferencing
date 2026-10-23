@@ -1,5 +1,6 @@
 """The master service.
 
+    GET  /                       the web page: chat + live view (ui/, built with `npm run build`)
     GET  /v1/models, POST /v1/chat/completions   the OpenAI-style API (master/openai_api.py)
 
     GET  /health                 loaded / ready, missing experts, nodes taking part
@@ -16,11 +17,13 @@ import platform
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from moe_dist import __version__
@@ -144,5 +147,12 @@ def create_app(settings: Settings | None = None, log=None) -> FastAPI:
             return JSONResponse({"error": str(exc)}, status_code=429)
         except NodeError as exc:  # a worker stopped answering in the middle of the answer
             return JSONResponse({"error": str(exc), "node_id": exc.node_id}, status_code=502)
+
+    # Last, so every API path above wins: everything else is the web page.
+    ui = Path(settings.ui_dir) if settings.ui_dir else Path(__file__).resolve().parents[2] / "ui" / "dist"
+    if (ui / "index.html").exists():
+        app.mount("/", StaticFiles(directory=ui, html=True), name="ui")
+    else:
+        log(f"no web page at {ui} (build it: cd ui && npm install && npm run build); the API works without it")
 
     return app

@@ -1,5 +1,20 @@
 # One image for every node (master and workers); NODE_ROLE decides what it runs.
 # Single architecture for now (built for the machine it is built on). Multi-architecture: Phase 4.
+
+# Stage 1: build the web page (ui/) with Node.js. Only the finished files go into the image,
+# so the image needs no Node.js and nobody needs it installed to run the cluster.
+FROM node:24-slim AS ui
+WORKDIR /ui
+# The same optional extra certificates as below (docker/certs/README.md), for npm's downloads.
+COPY docker/certs/ /certs/
+RUN cat /certs/*.crt > /certs/extra.pem 2>/dev/null; true
+ENV NODE_EXTRA_CA_CERTS=/certs/extra.pem
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci --no-fund --no-audit
+COPY ui/ ./
+RUN npm run build
+
+# Stage 2: the node itself.
 FROM python:3.12.8-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -32,6 +47,7 @@ COPY pytest.ini ./
 COPY moe_dist ./moe_dist
 COPY scripts ./scripts
 COPY tests ./tests
+COPY --from=ui /ui/dist ./ui/dist
 # `moe-node serve | join | status | leave` (moe_dist/cli/main.py)
 RUN printf '#!/bin/sh\nexec python -m moe_dist.cli "$@"\n' > /usr/local/bin/moe-node && chmod +x /usr/local/bin/moe-node
 

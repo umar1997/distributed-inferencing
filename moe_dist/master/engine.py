@@ -168,7 +168,7 @@ class Engine:
 
     def publish_nodes(self):
         if self.events.active:
-            self.events.publish("node_update", **self.nodes_view())
+            self.events.publish("node_update", placement=self.placement_view(), **self.nodes_view())
 
     def _publish_nodes_regularly(self):
         while not self._stopped.wait(NODE_UPDATE_EVERY_S):

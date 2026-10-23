@@ -213,6 +213,16 @@ docker compose -f docker/docker-compose.yml logs --no-log-prefix | grep "req=cd1
 
 `token=0` is the pass over the whole prompt, `token=1` the first new token, and so on. At the normal `LOG_LEVEL=info`, each answer writes just two lines: `request received` and a `done:` summary with the speed and, per node, network time vs computing time. `LOG_FORMAT=json` writes the same as one JSON object per line.
 
+**The web page (Phase 3.3).** Open **http://localhost:8000** once the cluster is ready: a chat window, and next to it a live view of the nodes and of which experts each layer uses for every token. Stop a worker (`docker stop moe-worker-2-1`) to watch its card turn red. The image builds the page itself; to work on the page with instant reloading, you need Node.js (`node --version` 20 or newer):
+
+```bash
+cd ui && npm install
+npm run dev        # http://localhost:5173, passes API calls on to the master at localhost:8000
+npm run build      # makes ui/dist, which a master started outside Docker serves at /
+```
+
+![The web page](images/ui-chat-and-grid.png)
+
 **Live events (Phase 3.2).** The master also sends a live stream of what is happening (for the web page in Phase 3.3): node health, each request's start and end, and for every new token which experts each layer used and which node ran them. To watch it raw:
 
 ```bash

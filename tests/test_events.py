@@ -99,3 +99,4 @@ def test_events_show_every_token_with_every_layers_experts_and_nodes():
     assert end["node_time_ms"]["worker-1"]["calls"] > 0 and end["summary"].startswith("done:")
     update = next(e for e in received if e["type"] == "node_update")
     assert {n["node_id"]: n["status"] for n in update["nodes"]} == {"master": "healthy", "worker-1": "healthy"}
+    assert update["placement"]["0"][16:] == ["worker-1"] * 16  # the grid stays up to date with the nodes
