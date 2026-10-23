@@ -2,6 +2,8 @@
 
 How to set up the Python environment for this project on a development machine (Steps 1–3 run on the 36 GB Mac). Docker setup comes later, in Phase 2.
 
+> **Setting up a laptop to join the cluster (master or worker, no Docker)?** Use [LAPTOP_SETUP.md](LAPTOP_SETUP.md) instead: `./scripts/install.sh`, then `./moe setup`. To let an AI agent do it: [LAPTOP_HANDOFF.md](LAPTOP_HANDOFF.md).
+
 The environment lives in a folder called **`.venv`** inside the repo. A "virtual environment" is a private copy of Python with its own packages, so this project's packages don't mix with anything else on the machine. `.venv` is listed in `.gitignore` and is never committed; anyone can rebuild it from `requirements.txt`.
 
 ---

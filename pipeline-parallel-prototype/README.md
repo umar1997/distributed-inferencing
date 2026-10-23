@@ -1,3 +1,7 @@
+> **An earlier, separate experiment, not used by the main project (`moe_dist/`).** It splits a dense model by
+> *layers* across two GPU machines (pipeline parallel). The main project splits an MoE model by *experts*
+> instead; see `docs/STORY.md`. Kept for reference.
+
 # distributed-inference
 
 Qwen3.5-4B split across two machines: layers 0-15 on machine A, layers 16-31 on machine B.

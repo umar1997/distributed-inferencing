@@ -5,9 +5,10 @@
 **/__pycache__
 *.pyc
 .DS_Store
-distributed-inference-project
+pipeline-parallel-prototype
 ui/node_modules
 ui/dist
 outputs
 logs
 models
+node.env

@@ -83,7 +83,8 @@ At every layer the master waits for the slowest node, so one slow laptop slows e
 distributed-inferencing/
 ├── requirements.txt            # pinned dependency versions (install: docs/SETUP.md)
 ├── .venv/                      # local Python environment (git-ignored)
-├── pyproject.toml              # later (Phase 4): `pip install` makes `moe-node` a command outside Docker
+├── moe                         # the one command on a laptop: ./moe setup | serve | join | status | leave
+├── node.env.example            # a laptop's settings; ./moe setup writes the real node.env (git-ignored)
 ├── moe_dist/                   # all Python code
 │   ├── config.py               # settings from environment variables (one place)
 │   ├── serve.py                # `python -m moe_dist.serve`: start master or worker
@@ -115,7 +116,8 @@ distributed-inferencing/
 │   │   ├── app.py              # FastAPI app for a worker
 │   │   └── membership.py       # register, heartbeat, re-register loop
 │   └── cli/
-│       └── main.py             # `moe-node serve | join | status | leave` (+ `netcheck` in 4.1)
+│       ├── main.py             # `./moe setup | download | serve | join | status | leave` (+ `netcheck` in 4.1)
+│       └── setup.py            # the `./moe setup` questions and checks -> node.env
 ├── ui/                         # React + Vite app (built into the image, served by the master at /)
 │   └── src/
 │       ├── api.ts              # live events + streaming chat
@@ -147,12 +149,15 @@ distributed-inferencing/
 │   ├── benchmark.py            # fixed prompts → tokens/sec, network time
 │   ├── netcheck.py             # round-trip time between machines
 │   ├── expert_usage.py         # which experts get picked most (Phase 4.3)
-│   └── prompts.json            # the fixed test prompts
+│   ├── prompts.json            # the fixed test prompts
+│   └── install.sh              # a fresh laptop: .venv + packages + web page (Phase 4.1)
 └── docs/
     ├── PLAN.md
     ├── AVAILABLE_MODELS.md
     ├── IMPLEMENTATION.md       # this file
     ├── SETUP.md                # Python environment, step by step
+    ├── LAPTOP_SETUP.md         # a laptop joining the cluster, no Docker (Phase 4.1)
+    ├── LAPTOP_HANDOFF.md       # the same, as instructions for an AI agent
     └── NETWORK_SETUP.md        # written in Phase 4.1
 ```
 
@@ -670,7 +675,11 @@ Example output (`LOG_LEVEL=debug`, `LOG_FORMAT=pretty`):
 **Goal:** be sure the laptops can reach each other reliably before running the model.
 
 **What gets built:**
-- **Multi-architecture image:** `docker buildx build --platform linux/arm64,linux/amd64` (amd64 only needed if Laptop A is Intel/AMD). CPU-only PyTorch (no CUDA). Pushed to a registry (e.g. Docker Hub or GitHub's), or saved to a file and copied.
+- **Laptops run natively, not in Docker** (decided in Phase 4.1, replacing the multi-architecture image). Reasons: Docker Desktop on a Mac runs everything inside a Linux virtual machine, which made the expert maths 2–15× slower (measured in Step 2); natively the laptop's own CPU and memory are used directly, and nothing needs building per CPU type. Docker stays for the one-Mac test cluster (Step 2). The setup:
+  - `scripts/install.sh`: Python 3.12 → `.venv` → the exact packages in `requirements.txt` (Linux gets CPU-only PyTorch) → the web page if Node.js is there.
+  - `./moe setup`: the questions (role, master's address, cluster token, name, port, experts), checked against the running master (reachable? token right? which experts are free?), plus the model download and a memory check. The answers go into `node.env`, one `NAME=value` per line, which every later `./moe serve` / `./moe join` reads. Environment variables and command options still win over the file. `--yes` + options run it without questions (for an AI agent, `docs/LAPTOP_HANDOFF.md`).
+  - `ADVERTISE_ADDR=auto`: a worker finds its own IP at every start (Wi-Fi may hand out a new one), using the network card that leads to the master and skipping VPN tunnels.
+  - Guide: `docs/LAPTOP_SETUP.md`, with filled-in examples for 2 and 3 workers.
 - `docs/NETWORK_SETUP.md` (section 8 below, in full detail).
 - `moe-node netcheck` and `scripts/netcheck.py`: sends 200 pings with 2 KB and 64 KB payloads to each worker, and reports the typical (median, p50), bad-case (p95, p99) and worst round-trip times, plus lost replies. It also prints an **upper limit on speed**: `max tok/s ≈ 1000 / (layers × p50 ms)`.
 - The master runs a short netcheck automatically when a worker registers, logs it, and shows it on the node card.
@@ -679,7 +688,13 @@ Example output (`LOG_LEVEL=debug`, `LOG_FORMAT=pretty`):
 
 **Done when:** every worker is reachable from the master, p95 < 50 ms, and no lost replies over 200 pings.
 
-**Risks:** router client isolation; the macOS firewall blocking Docker; laptops going to sleep; Wi-Fi power saving. All covered in section 8.
+**Risks:** router client isolation; the macOS firewall blocking incoming connections; laptops going to sleep; Wi-Fi power saving. All covered in section 8.
+
+**Results so far (native laptop setup; the network check tool is still to do):**
+- `tests/test_setup.py` (9 tests, no model or servers): even expert splits (32 in 3 → 11, 11, 10), free experts ignore dead nodes and the laptop's own old entry, `node.env` round trip (file readable by its owner only), environment variables win over the file, `auto` address, the worker wizard against a fake master (suggested share, wrong token refused, unreachable master explained), the master wizard (new token, suggested split), `join` without settings says what to do. `tests/conftest.py` makes the tests ignore a laptop's `node.env`. All 177 quick tests pass.
+- **Fresh copy of the repo** (only the files git would clone): `./scripts/install.sh` made `.venv` with Python 3.12.8, installed the pinned versions and built the page; the 177 quick tests pass there too. Then `./moe setup --yes ...` against the running Docker master → `./moe join` registered as `http://10.127.51.95:8100` (found by `auto`), `./moe status` showed it `healthy` with `coverage: OK`, and `./moe leave` took it out cleanly.
+- **Found on the way:** on this Mac a company security tunnel (`utun5`, 100.64.0.1) takes all traffic to unknown addresses, so "which card leads there?" first gave the tunnel's address, which no other laptop can reach. Fixed: only cards with a broadcast address (Wi-Fi / Ethernet) count as reachable, and the tunnel is skipped. On a real Wi-Fi network the master is on the laptop's own network, so the right card is picked directly.
+- Free memory on macOS is now measured (`vm_stat`: free + reclaimable pages), so Mac workers show RAM free in `./moe status` and on the page; before, only Linux did.
 
 #### Phase 4.2 — Granite across the 3 laptops
 
@@ -691,12 +706,11 @@ Example output (`LOG_LEVEL=debug`, `LOG_FORMAT=pretty`):
 - Laptop A (8 GB): `26-31` (fewer experts)
 
 ```bash
-# on each worker laptop:
-docker run -d --name moe-worker -p 8100:8100 -v moe-models:/models \
-  -e NODE_ROLE=worker -e NODE_ID=laptop-a -e MASTER_ADDR=192.168.1.10:8000 \
-  -e ADVERTISE_ADDR=192.168.1.21:8100 -e EXPERT_IDS=26-31 \
-  -e MODEL_ID=ibm-granite/granite-3.0-1b-a400m-instruct -e MODEL_REVISION=ffec3c35… \
-  -e DTYPE=bf16 -e CLUSTER_TOKEN=… --memory 2g <image>
+# on each laptop (docs/LAPTOP_SETUP.md): once
+./scripts/install.sh && ./moe setup        # e.g. worker, master 192.168.1.10, experts 26-31
+# then every time
+./moe serve      # master
+./moe join       # workers
 ```
 
 **How to test it:**
@@ -794,7 +808,7 @@ Not needed now. The design handles it like this: **one request at a time, others
 | 2.3 | OpenAI API | `openai` client, Open WebUI | 36 GB Mac (Docker) |
 | 2.4 | memory limits | runs within 7 GB | 36 GB Mac (Docker) |
 | 3.1–3.3 | logs, events, React UI | follow a token in logs and UI | 36 GB Mac (Docker) |
-| 4.1 | multi-arch image, network check | p95 < 50 ms | all laptops |
+| 4.1 | native laptop setup (`install.sh`, `./moe setup`), network check | p95 < 50 ms | all laptops |
 | 4.2 | Granite on laptops | same tokens as Step 2 | all laptops |
 | 4.3–4.4 | speed-ups, backups | benchmark table | all laptops |
 | 4.5 | Qwen1.5-MoE | Qwen golden prompts | all laptops |

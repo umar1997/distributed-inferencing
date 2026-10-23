@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# The project's one command on a laptop: ./moe setup | serve | join | status | leave | download
+# (moe_dist/cli/main.py). It runs inside this repo's .venv, so nothing needs to be "activated" first.
+set -e
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python="$here/.venv/bin/python"
+if [ ! -x "$python" ]; then
+  echo "No Python environment yet: run ./scripts/install.sh first (docs/LAPTOP_SETUP.md)." >&2
+  exit 1
+fi
+cd "$here"
+# On a Mac, keep the laptop awake while a node runs (a sleeping laptop is a dead worker).
+# caffeinate -i stops idle sleep only; closing the lid still sleeps the laptop.
+if [ "$(uname)" = "Darwin" ] && { [ "$1" = "serve" ] || [ "$1" = "join" ]; } && command -v caffeinate >/dev/null; then
+  exec caffeinate -i "$python" -m moe_dist.cli "$@"
+fi
+exec "$python" -m moe_dist.cli "$@"

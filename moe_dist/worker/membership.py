@@ -13,6 +13,8 @@ Problems are logged once when they start (not every retry), and once when they a
 
 import os
 import platform
+import re
+import subprocess
 import threading
 from pathlib import Path
 
@@ -38,12 +40,23 @@ def machine_info() -> dict:
 
 
 def ram_free_gb() -> float | None:
-    meminfo = Path("/proc/meminfo")  # Linux (containers); macOS has no simple equivalent
-    if not meminfo.exists():
+    """Memory that programs can still get, in GB (Linux: MemAvailable; macOS: free + reclaimable pages)."""
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        for line in meminfo.read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return round(int(line.split()[1]) / 2**20, 2)
         return None
-    for line in meminfo.read_text().splitlines():
-        if line.startswith("MemAvailable:"):
-            return round(int(line.split()[1]) / 2**20, 2)
+    if platform.system() == "Darwin":
+        try:
+            out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        page = int(re.search(r"page size of (\d+)", out).group(1)) if "page size of" in out else 4096
+        pages = {m.group(1): int(m.group(2)) for m in re.finditer(r"Pages (\w+(?: \w+)?):\s+(\d+)", out)}
+        # free, plus pages macOS hands out again as soon as a program asks (cached files, unused)
+        reclaimable = sum(pages.get(k, 0) for k in ("free", "inactive", "speculative", "purgeable"))
+        return round(reclaimable * page / 2**30, 2)
     return None
 
 

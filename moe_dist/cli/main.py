@@ -1,14 +1,18 @@
-"""`moe-node`: start a node, look at the cluster, or take a worker out of it.
+"""`moe-node` (on a laptop: `./moe`): set up a node, start it, look at the cluster, or take a worker out.
 
-    moe-node serve                                  start this node from environment variables
-    moe-node join --master 192.168.1.10:8000 --experts 0-15 [--advertise 192.168.1.21:8100]
-    moe-node status [--master localhost:8000]       table of nodes, health, round trips, experts
-    moe-node leave                                  (inside a worker) say goodbye, then stop
+    ./moe setup                                     questions -> node.env (docs/LAPTOP_SETUP.md)
+    ./moe download                                  download the model now (setup does this too)
+    ./moe serve                                     start this node (master or worker) from node.env
+    ./moe join [--master 192.168.1.10:8000 --experts 0-15 --advertise auto]   start a worker
+    ./moe status [--master localhost:8000]          table of nodes, health, round trips, experts
+    ./moe leave                                     (on a worker) say goodbye, then stop
 
-In the Docker image `moe-node` is installed as a command; elsewhere use `python -m moe_dist.cli`.
+Settings come from environment variables and node.env (moe_dist/config.py); options win over both.
+In the Docker image `moe-node` is installed as a command; elsewhere `python -m moe_dist.cli` works too.
 """
 
 import os
+from pathlib import Path
 
 import httpx
 import typer
@@ -22,26 +26,64 @@ app = typer.Typer(help="Distributed MoE inference: one command for every node.",
 
 @app.command()
 def serve():
-    """Start this node (master or worker) from the environment variables."""
+    """Start this node (master or worker) from node.env and the environment variables."""
     from moe_dist.serve import main
 
     main()
 
 
 @app.command()
+def setup(
+    role: str = typer.Option(None, help="master or worker"),
+    master: str = typer.Option(None, help="Worker: the master's address, e.g. 192.168.1.10 or 192.168.1.10:8000"),
+    token: str = typer.Option(None, help="The cluster token (shared password); the master makes one if empty"),
+    experts: str = typer.Option(None, help="Experts this laptop holds, e.g. 0-9 or 0,4,8"),
+    name: str = typer.Option(None, help="This laptop's name, e.g. laptop-b"),
+    port: int = typer.Option(None, help="Port (default 8000 on the master, 8100 on a worker)"),
+    ip: str = typer.Option(None, help="Worker: address the master uses to reach it (default 'auto')"),
+    laptops: int = typer.Option(None, help="Master: how many laptops take part, itself included (for the suggested split)"),
+    workers_after: int = typer.Option(None, help="Worker: how many more workers will be set up after this one"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Take the suggested answer for every question not given"),
+    download: bool = typer.Option(True, help="Download the model now (--no-download: at the first start)"),
+    env_file: Path = typer.Option(None, help="Where to save (default: node.env at the top of the repo)"),
+):
+    """Ask the few questions that set up this laptop, check the answers, and save them to node.env."""
+    from moe_dist.cli.setup import run
+
+    run(env_file, yes=yes, download=download, role=role, master=master, token=token, experts=experts, name=name,
+        port=port, ip=ip, laptops=laptops, workers_after=workers_after)
+
+
+@app.command()
+def download():
+    """Download the model in node.env (or MODEL_ID) now, so the first start does not wait for it."""
+    from moe_dist.prepare import main
+
+    main()
+
+
+@app.command()
 def join(
-    master: str = typer.Option(..., help="Where the master is, e.g. 192.168.1.10:8000"),
-    experts: str = typer.Option(..., help="Experts to hold in every layer, e.g. 0-15"),
-    advertise: str = typer.Option("", help="Address the master uses to reach this worker, e.g. 192.168.1.21:8100"),
+    master: str = typer.Option("", help="Where the master is, e.g. 192.168.1.10:8000 (default: MASTER_ADDR)"),
+    experts: str = typer.Option("", help="Experts to hold in every layer, e.g. 0-15 (default: EXPERT_IDS)"),
+    advertise: str = typer.Option("", help="Address the master uses to reach this worker, e.g. 192.168.1.21:8100 "
+                                           "or auto (default: ADVERTISE_ADDR)"),
     node_id: str = typer.Option("", help="This worker's name (default: NODE_ID or the computer's name)"),
 ):
-    """Start a worker with these settings (they override the environment variables)."""
+    """Start a worker. Without options it uses node.env (written by `./moe setup`); options win over it."""
+    s = Settings()
+    master, experts = master or s.master_addr, experts or (s.expert_ids if s.expert_ids != "none" else "")
+    if not master or not experts:
+        typer.echo("join needs the master's address and the experts: run ./moe setup first, or pass "
+                   "--master 192.168.1.10:8000 --experts 0-15", err=True)
+        raise typer.Exit(1)
     os.environ.update(NODE_ROLE="worker", MASTER_ADDR=master, EXPERT_IDS=experts)
     if advertise:
         os.environ["ADVERTISE_ADDR"] = advertise
-    if node_id or "NODE_ID" not in os.environ:
+    if node_id or ("NODE_ID" not in os.environ and s.node_id == "node"):
         os.environ["NODE_ID"] = node_id or os.uname().nodename.split(".")[0]
-    os.environ.setdefault("LISTEN_PORT", "8100")
+    if "LISTEN_PORT" not in os.environ and s.listen_port == 8000:  # 8000 is the master's
+        os.environ["LISTEN_PORT"] = "8100"
     serve()
 
 

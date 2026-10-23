@@ -1,6 +1,6 @@
 # The Story So Far
 
-This is the story of this project, from the first idea to where we are now (end of Step 2, October 2026). It explains what we built and why, what went wrong and how we fixed it, in plain English. Technical words are explained the first time they appear. The detailed plan and all measurements are in [IMPLEMENTATION.md](IMPLEMENTATION.md); this document is the "why" behind it.
+This is the story of this project, from the first idea to where we are now (the start of Step 4, real laptops, October 2026). It explains what we built and why, what went wrong and how we fixed it, in plain English. Technical words are explained the first time they appear. The detailed plan and all measurements are in [IMPLEMENTATION.md](IMPLEMENTATION.md); this document is the "why" behind it.
 
 ---
 
@@ -116,7 +116,7 @@ The master itself must never load the full model, because with bigger models tha
 
 **A company firewall in the way.** Building the image failed with "certificate verify failed". This Mac's internet goes through **Zscaler**, a company security filter that inspects encrypted traffic and re-signs it with its own certificate (a digital ID card). The Mac trusts that certificate; a fresh container does not, so downloads looked like an attack. We added an optional folder where such a certificate can be placed; the image then trusts it. On laptops without such a filter the folder is empty and nothing changes. We checked both ways.
 
-**A surprise: Mac and Linux disagree.** The containers gave different answers from our golden files in bf16. We first suspected our network code, but then ran **plain, unchanged Transformers inside a container**: it also gave different answers in bf16 (5 of 10 prompts), while in fp32 all 10 were the same. The reason: containers run Linux, and Linux and macOS use different low-level maths libraries that round bf16 numbers slightly differently. Not our bug. So we made separate golden files for Linux, and the containers matched those **exactly**, in fp32 and bf16. This finding shapes the plan for the real laptops (see section 10).
+**A surprise: Mac and Linux disagree.** The containers gave different answers from our golden files in bf16. We first suspected our network code, but then ran **plain, unchanged Transformers inside a container**: it also gave different answers in bf16 (5 of 10 prompts), while in fp32 all 10 were the same. The reason: containers run Linux, and Linux and macOS use different low-level maths libraries that round bf16 numbers slightly differently. Not our bug. So we made separate golden files for Linux, and the containers matched those **exactly**, in fp32 and bf16. This finding shapes the plan for the real laptops (see section 13).
 
 **Why Docker on a Mac is slow.** Speed was the biggest surprise. In Docker, the cluster made only about **1.8 tokens per second**, compared with 16.5 for our code in one program on macOS. We measured where the time goes:
 
@@ -163,33 +163,117 @@ Only healthy and slow workers get work. A worker with a different model, version
 
 All answers were identical to the golden files and **nothing ran out of memory**. The "highest use" looks close to the limits, but a big part of it is copies of files kept in memory, which Linux drops whenever memory gets tight; what the programs really need is the last column. The workers' highest point is while loading, the "twice the size while loading" effect we found in Phase 1.1.
 
-## 9. Where we are
+## 9. Step 3: watching it work
 
-At the end of Step 2, the system does everything the plan asked for on one laptop:
+At the end of Step 2 the cluster worked, but you couldn't *see* it work. You typed a question, an answer came back, and everything in between was hidden. Since the point of the project is to watch distributed inference happen, Step 3 was about making it visible: first in the logs, then live on a web page.
 
-- The model is split: the master holds the shared parts plus experts 0–9, two workers hold 10–20 and 21–31, and nobody holds the full model.
+**Logs that follow one token (Phase 3.1).** A **log** is the running diary a program writes about what it is doing. We gave every node the same log format: time, node name, and, inside a request, three labels: `req=` (which request), `token=` (which pass through the model; 0 is the whole prompt at once, 1 the first new token, and so on) and `layer=`. With the detailed setting (`LOG_LEVEL=debug`), every token and every layer gets a few lines:
+
+- the master: "router picked experts [3, 6, 9, 12, 18, 20, 21, 28]" and "sending [6, 9] → local, [12, 18, 20] → worker-1, …"
+- each worker: "ran experts [12, 18, 20] on 1 token in 8.8 ms"
+- the master again: "all results back in 15 ms (slowest: worker-1)"
+
+Because every node uses the same labels, a search for `req=cd116308 token=5 layer=6` across all three containers shows one complete step from three angles: the master's choice, and each worker doing exactly the experts it was sent. At the normal setting, a request prints just two lines: "received" and a summary like "9 tokens in 5.9 s = 1.5 tok/s | worker-1 net 0.4 s / compute 2.9 s". We split each worker's time into **network time** and **compute time**: the master knows how long it waited, and the worker reports how long it computed, so the difference is the network. This confirmed what Step 2 had measured: in Docker on the Mac, the computing, not the network, took most of the time.
+
+**Live events (Phase 3.2).** A web page can't read log files, so the master got a new address, `/api/events`, that **streams** what happens as it happens. It uses **Server-Sent Events**: the browser opens one connection and the server keeps sending small messages through it. When you connect, you get a "hello" with the model and which node holds which expert. After that you get a message whenever a node's health changes, when a request starts and ends, and one message **per new token** with all 24 layers inside: per layer, the 8 experts the router picked, which computer ran each, how much each counted, and how long the layer waited. One such message is about 11 KB. Collecting this costs a little time, so the master only does it while someone is actually watching.
+
+**The web page (Phase 3.3).** Finally, a web page, built with **React** (a popular library for building interactive web pages). The master serves it itself, so you just open `http://localhost:8000`.
+
+![The web page: chat on the left, the live cluster view on the right](images/ui-chat-and-grid.png)
+
+- **Left:** a normal chat window. The answer appears word by word.
+- **Right, top:** one card per computer, coloured green, yellow or red by health, with its address, experts, round-trip time and free memory.
+- **Right, middle:** a grid with the 24 layers as rows and the 32 experts as columns. Each cell has the colour of the computer that holds it. While the answer is being written, the 8 experts the router picked in each layer **light up**, token by token, so you can literally watch the work jump between computers. Clicking an earlier token, or dragging a slider, replays it.
+- **Right, bottom:** speed, and for each computer a bar showing compute time versus network time.
+- On a phone, chat and cluster view become two tabs.
+
+We checked the page against the logs: for one token in layer 6, the page lit experts 3, 6, 9, 12, 18, 20, 21 and 28, and the master's log for the same step said exactly "router picked experts [3, 6, 9, 12, 18, 20, 21, 28]". The page even shows the label to search for in the logs. When we stopped worker-2, its card turned yellow after about 5 seconds and red at 15, a red banner listed the missing experts, and its cells in the grid turned red. After restarting it, everything went green again by itself.
+
+Testing the page in a real browser found three bugs that the code's own tests could not: the page crashed the first time you sent a message (a small React rule we had broken), the grid was cut off on phones, and the grid kept showing a dead worker's colour, because the page only learned who holds which expert once, when it connected. All three are fixed.
+
+## 10. Getting ready for real laptops: no Docker
+
+Step 4 is the real thing: three laptops on Wi-Fi. The original plan was to run the same Docker image on every laptop. We changed that, for the reason Step 2 had shown: on a Mac, Docker runs everything inside a hidden virtual machine, and there the expert work was **2–15× slower**. Two of the three laptops are Macs. So the laptops now run the code **directly** ("natively"): clone the repo, create a Python environment, start the node. Docker stays for the three-containers-on-one-Mac test cluster.
+
+That meant a new laptop had to be easy to set up without Docker. Each laptop really has only a few things of its own: whether it is the master or a worker, its name, which experts it holds, its IP address, and the master's address. We discussed two ways to give it these: a **wizard** (a program that asks questions) or a **settings file**. We chose both, working together. The wizard asks once, checks the answers, and writes them into a small settings file, `node.env`. Every later start just reads the file, so no questions. To change something, you edit the file or run the wizard again.
+
+Three design choices came out of that discussion:
+
+- **The laptop's own IP is found automatically, at every start** (`auto`). Home Wi-Fi often hands out a different IP after a restart, and an IP saved once would then be wrong.
+- **The wizard asks the master which experts are still free**, and suggests a share. The master already knew this; it's the same information the web page uses to colour its grid.
+- **A cluster token** (a shared password) is now part of setup. In Docker it hardly mattered, but on real Wi-Fi anyone on the network could otherwise send work to the laptops.
+
+Any number of workers works: one, two or ten. There is no fixed list of workers anywhere, since they register themselves (Phase 2.2). The only rule is that together the laptops hold all 32 experts. More laptops means less memory per laptop, but not more speed. Every extra laptop is another Wi-Fi round trip to wait for in each layer, and the slowest one decides how long that layer takes.
+
+What was built:
+
+| File | What it is |
+|---|---|
+| `scripts/install.sh` | One-time install: finds Python 3.12, creates `.venv` with `python3.12 -m venv .venv`, installs the exact versions from `requirements.txt`, and builds the web page if Node.js is installed |
+| `./moe` | The one command on every laptop: `setup`, `serve`, `join`, `status`, `leave`, `download`. It uses `.venv` by itself, so there's nothing to "activate". On a Mac it also keeps the laptop from going to sleep while running |
+| `./moe setup` | The wizard. It checks the answers as you go: can it reach the master, is the token right, which experts are still free, do they fit in memory. It also downloads the model, then saves everything to `node.env` |
+| `node.env.example` | A sample settings file with explanations, for setting up by hand without the wizard |
+| `docs/LAPTOP_SETUP.md` | The step-by-step guide. It includes the by-hand commands, example values for master + 2 workers and master + 3 workers, day-to-day commands and a troubleshooting table |
+| `docs/LAPTOP_HANDOFF.md` | Instructions for an AI agent. On the new laptop you just say: "Read docs/LAPTOP_HANDOFF.md and set up this laptop." |
+| `pipeline-parallel-prototype/` | The renamed `distributed-inference-project/`. It's an older, separate experiment that split a model by layers across 2 GPU machines. A note at the top of its README says so |
+
+So a new laptop needs only this:
+
+```bash
+git clone <repo> && cd distributed-inferencing
+./scripts/install.sh     # once
+./moe setup              # once: the questions, saved to node.env
+./moe serve              # the master (start it first)
+./moe join               # each worker
+```
+
+**How we tested it.** We made a fresh copy of the repo, with only the files git would give a new laptop, and set it up from nothing. `install.sh` built the environment and all 177 quick tests passed inside it. Then the fresh copy, running natively on the Mac, joined the Docker cluster as an extra worker: the wizard checked the master and the token, the worker found its own IP, showed up as healthy, and left cleanly when asked.
+
+**Two things we learned on the way.**
+
+- **The company security filter fooled the IP detection.** The standard trick for "what's my IP?" asks the computer which network card it would use to reach the master. On this Mac, the Zscaler security filter (the same one that broke Docker's downloads in Step 2) has its own pretend network card that catches all traffic to unknown addresses. So the answer was that card's address, which no other laptop can reach. Now only real Wi-Fi and Ethernet cards count.
+- **Free memory on a Mac** wasn't measured before: the code only knew Linux's way. Now Mac workers report their free memory too, which the wizard uses to warn if the chosen experts won't fit.
+
+## 11. Could the bigger Qwen models run?
+
+With everything working for Granite, the natural question was: if every laptop were like the 36 GB Mac, could the big Qwen models run across two or three of them? Using the measured sizes from section 3:
+
+| Model | Size (bf16) | This Mac + 1 other | This Mac + 2 others |
+|---|---|---|---|
+| Qwen1.5-MoE (60 experts × 415 MB) | 28.6 GB | ✅ easy: ~16 GB on the master, ~13 GB on the worker | ✅ ~10 GB each |
+| Qwen3-30B (128 experts × 453 MB) | 61 GB | ❌ too tight: ~31 GB each leaves macOS almost nothing | ✅ memory OK, ~21 GB each |
+
+So: yes for Qwen1.5-MoE on two or three laptops, and Qwen3-30B only on three. Three catches remain:
+
+- **The code can't run Qwen yet.** Each model family stores its experts differently in its files. So far only Granite's adapter (the small piece of code that knows a model's file layout, section 5) is written. The Qwen adapters are the plan's Phases 4.5 and 4.6.
+- **Disk space.** Today every laptop downloads the whole model file, even though it only loads its own experts. For Qwen3 that's 61 GB per laptop, and the Mac had 39 GB free. The planned fix is to cut each laptop's experts into a smaller file of its own, or to use the half-size FP8 version.
+- **Speed.** Qwen3 has 48 layers instead of 24: twice as many Wi-Fi round trips per token.
+
+## 12. Where we are
+
+At the start of Step 4 (October 2026), on one Mac:
+
+- The model is split: the master holds the shared parts and some experts, the workers hold the rest, and nobody holds the full model.
 - The answers are **exactly** the same as plain Transformers on the same platform, checked token by token.
 - Workers join, leave, die and come back by themselves, and the master always knows who is alive.
 - Any OpenAI-style chat tool can use it, with streaming.
 - It fits inside an 8 GB laptop's budget.
+- You can **watch it work**: logs that follow one token across all nodes, and a web page where the experts light up as the answer is written.
+- A new laptop can join with four commands, without Docker, and an AI agent can do the setup from a single instruction.
 
-What it is not yet: easy to watch, and fast.
+What's not done yet: running on the real laptops over Wi-Fi, and speed.
 
-## 10. What comes next, and what we expect on real laptops
+## 13. What comes next, and what we expect on real laptops
 
-**Step 3: seeing it work.** The point of the project is to *see* distributed inference happen. Next we add clear logs on every node (for each token and layer: which experts the router picked, which worker got which, how long each took) and a web page with a live view: the nodes and their health, a grid of layers × experts coloured by which laptop holds them, and cells lighting up as tokens are processed.
+**Step 4: real laptops over Wi-Fi.** The repo gets cloned onto the other laptops, each one is set up with `./moe setup`, and the cluster runs across them. Here is what we expect, and why.
 
-**Step 4: real laptops over Wi-Fi.** Then the same image runs on three real laptops. Here is what we expect, and why.
+*The network will decide the speed.* Every token needs one round trip to the workers for **every MoE layer**: 24 for Granite and Qwen1.5, 48 for Qwen3. On Wi-Fi a round trip typically takes 3–10 ms, plus sudden spikes. 24 layers × 5 ms is already 120 ms per token, before any computing. Running natively instead of in Docker removes the slow computing we measured in Step 2, so we expect roughly **3–7 tokens per second** for Granite across the laptops. That's still slower than one laptop alone, which is the price of the idea, and we accept it for a learning project. A small network-check tool (the rest of Phase 4.1) will measure the real round-trip times first and print the best speed that network allows. The main ways to lose less time are already planned: sending all work for a node in one message per layer (already done), putting the most-used experts on the master (no network at all for those), and good Wi-Fi habits (5 GHz band, close to the router, power saving off).
 
-*The network will decide the speed.* Every token needs one round trip to the workers for **every MoE layer**: 24 for Granite and Qwen1.5, 48 for Qwen3. On Wi-Fi a round trip typically takes 3–10 ms, plus sudden spikes. 24 layers × 5 ms is already 120 ms per token, before any computing. So we expect roughly **2–6 tokens per second** for Granite across the laptops, slower than one laptop alone. That is the price of the idea, and we accept it for a learning project. Before running the model, a small network-check tool will measure the real round-trip times and print the best speed that network allows. The main ways to lose less time are already planned: sending all work for a node in one message per layer (already done), putting the most-used experts on the master (no network at all for those), and good Wi-Fi habits (5 GHz band, close to the router, power saving off).
+*Different computers round differently.* We learned that macOS and Linux already give different answers in bf16. Across three real laptops, each expert runs on a different machine, so one answer mixes their rounding. We therefore decided on two checks. In **fp32**, the answers must be **exactly** the golden ones (macOS and Linux agreed perfectly in fp32). In **bf16**, the normal setting, a different token is only allowed where the model was almost undecided between its two best tokens (a "near-tie"), and we also read some answers by hand to make sure they make sense.
 
-*Docker on the Macs will still be slow.* Two of our three laptops are Macs, so Docker there again runs inside the hidden Linux virtual machine, with the same slow memory reading we measured. Because our code is plain Python, the Mac nodes could also run **without Docker**, directly on macOS, where the expert work is 2–15× faster. We will measure both. If Laptop A is a Linux or Windows machine, its Docker runs differently, and we will measure that too.
+*Memory will be fine for Granite, and planned for Qwen.* Granite fits easily. For Qwen1.5-MoE, most experts go on the 36 GB Mac, which also means fewer Wi-Fi trips, and the 8 GB laptop gets only a few experts. The exact split depends on Laptop C's memory, which we still need to find out.
 
-*Different computers round differently.* We learned that macOS and Linux already give different answers in bf16. Across three real laptops, each expert runs on a different machine, so one answer mixes their rounding. We therefore decided on two checks: in **fp32**, the answers must be **exactly** the golden ones (macOS and Linux agreed perfectly in fp32); in **bf16**, the normal setting, a different token is only allowed where the model was almost undecided between its two best tokens (a "near-tie"), and we also read some answers by hand to make sure they make sense.
-
-*Memory will be fine for Granite, and planned for Qwen.* Granite fits easily. For Qwen1.5-MoE (28.6 GB), most experts go on the 36 GB Mac, which also means fewer Wi-Fi trips; the 8 GB laptop gets only a few experts. The exact split depends on Laptop C's memory, which we still need to find out, as well as Laptop A's processor type (if it is an Intel/AMD processor, the Docker image must be built for both processor types).
-
-*Then the bigger models.* Once Granite works across the laptops, we switch to Qwen1.5-MoE with its own adapter and its own golden files, and, if there is enough memory, to Qwen3-30B with experts stored in the smaller int8 format.
+*Then the bigger models.* Once Granite works across the laptops, we switch to Qwen1.5-MoE with its own adapter and its own golden files. Then, if memory and disk allow (section 11), we try Qwen3-30B.
 
 ## Glossary
 
@@ -212,3 +296,12 @@ What it is not yet: easy to watch, and fast.
 | Heartbeat / ping | "I'm alive" messages from workers / the master's own check on each worker |
 | Streaming | Sending the answer piece by piece while it is being made |
 | API | A fixed way for programs to talk to each other (here: the OpenAI-style chat API) |
+| Log | The running diary a program writes about what it's doing |
+| Server-Sent Events | One open connection over which a server keeps sending small messages to a web page |
+| React | A popular library for building interactive web pages |
+| Native | Running directly on the laptop's own operating system, not inside Docker |
+| IP address / port | A computer's number on the network / which "door" on it a program listens at |
+| venv (`.venv`) | A private folder with its own Python and packages, so the project's versions don't clash with anything else |
+| `node.env` | A laptop's small settings file (role, name, experts, master's address, token), written by the wizard |
+| Wizard | A program that asks a few questions, checks the answers and saves them |
+| Cluster token | A shared password between the master and its workers |
