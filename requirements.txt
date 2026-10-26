@@ -1,4 +1,11 @@
-# Python 3.12. Install steps: docs/SETUP.md
+# Python 3.12 (3.12.8 tested; 3.11 is too old, 3.13 is not tested with these versions).
+#
+# Install (docs/LAPTOP_SETUP.md; ./scripts/install.sh does all of this for you):
+#   python3.12 -m venv .venv
+#   .venv/bin/python -m pip install --upgrade pip
+#   .venv/bin/python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+# The extra index gives Linux the CPU-only PyTorch (no multi-GB graphics card libraries); macOS ignores it.
+#
 # Versions are pinned so every node (and every Docker image) runs the same code.
 # Upgrading transformers can change the MoE expert code we plug into, so upgrade
 # on purpose and re-run the tests (see docs/IMPLEMENTATION.md, Phase 0).
@@ -8,15 +15,25 @@ torch==2.14.1
 transformers==5.20.1
 safetensors==0.8.0
 huggingface_hub==2.2.0
+# Pulled in by the packages above, pinned because they can change results:
+tokenizers==0.23.3  # text -> tokens; another version could split text differently
+numpy==2.5.4
+hf-xet==1.7.0       # Hugging Face's download helper
+jinja2==3.1.6       # fills in the model's chat template (how messages become a prompt)
+regex==2026.9.29
 
 # Services (master and workers)
 fastapi==0.148.0
+starlette==1.9.0    # under fastapi; serves the web page
 uvicorn==0.54.0
 httpx==0.28.1
+pydantic==2.14.1
 pydantic-settings==2.16.0
+python-dotenv==1.2.4  # reads a laptop's node.env (moe_dist/config.py)
 
-# Command line (moe-node)
+# Command line (./moe)
 typer==0.27.3
+click==8.5.0
 
 # Tests
 pytest==9.1.1
