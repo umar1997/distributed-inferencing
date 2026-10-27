@@ -215,8 +215,8 @@ More in [docs/DOCKER_SETUP.md, section 6](docs/DOCKER_SETUP.md#6-working-on-the-
 
 ## Licensing
 
-- **This repository's code** doesn't have a license file yet. Until one is added, the usual default applies:
-  you can read the code, but you need the author's permission to reuse it.
+- **This repository's code** is under the [MIT License](LICENSE): free to use, change and share, including
+  commercially, as long as the copyright notice stays with it. It comes with no warranty.
 - **The models are not part of this repo.** They're downloaded from Hugging Face, and each has its own
   license:
   - IBM Granite 3.0 and Qwen3-30B-A3B: [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) (free to
