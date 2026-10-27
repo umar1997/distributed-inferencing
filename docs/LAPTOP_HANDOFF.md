@@ -26,7 +26,7 @@ only if you need it: `docs/STORY.md` (what the project is) and `docs/IMPLEMENTAT
   and why first.
 - Keep memory use light: don't run the slow test suites (`-m model`, `-m cluster`) unless asked.
 - Never print the cluster token in a summary or share it outside this laptop. It's a password.
-- If something fails, look it up in the guide's Troubleshooting table (section 8) before improvising.
+- If something fails, look it up in the guide's "Problems and fixes" table (section 7) before improvising.
 
 ### Steps
 
@@ -57,7 +57,7 @@ only if you need it: `docs/STORY.md` (what the project is) and `docs/IMPLEMENTAT
    # add --experts 22-31 if the person chose them; --name laptop-b for a name
    ```
 
-   If it stops with a ✗ line, fix that cause (Troubleshooting) and run it again. Show the person the
+   If it stops with a ✗ line, fix that cause ("Problems and fixes") and run it again. Show the person the
    setup output, except the token. On the master, tell the person to write down the master's address
    and token from the last lines, because the workers need them.
 

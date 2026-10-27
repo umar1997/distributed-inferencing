@@ -7,7 +7,7 @@ Read these when needed:
     `docs/PLAN.md` (what I want), 
     `docs/IMPLEMENTATION.md` (the phase-by-phase plan),
     `docs/AVAILABLE_MODELS.md` (models, memory, packed-expert layout), 
-    `docs/SETUP.md` (environment).
+    `docs/DOCKER_SETUP.md` (the cluster in Docker on one computer; tests).
     `docs/STORY.md` (Story of building decisions used in this repo).
     `docs/LAPTOP_HANDOFF.md` (Prompt to run on new laptop for setup).
     `docs/LAPTOP_SETUP.md` (Setup for Latop that will run this repo as either Master or Worker).

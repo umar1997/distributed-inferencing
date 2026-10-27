@@ -88,13 +88,15 @@ def join(
 
 
 @app.command()
-def status(master: str = typer.Option("", help="The master's address (default: MASTER_ADDR or localhost:8000)")):
+def status(master: str = typer.Option("", help="The master's address (default: MASTER_ADDR; on the master itself, "
+                                              "localhost and its own port)")):
     """Show every node, its health state, round trips and experts, and whether all experts are covered.
 
     RTT now = typical round trip of the last 5 pings (what "slow" is judged on); RTT p95 = 95 % of
     the last 50 pings were faster than this.
     """
-    url = http_url(master or Settings().master_addr or "localhost:8000")
+    s = Settings()
+    url = http_url(master or s.master_addr or f"localhost:{s.listen_port if s.node_role == 'master' else 8000}")
     try:
         answer = httpx.get(f"{url}/api/nodes", timeout=5, trust_env=False).raise_for_status().json()
     except httpx.HTTPError as exc:

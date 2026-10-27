@@ -152,7 +152,7 @@ def run(env_path: Path | None = None, yes: bool = False, download: bool = True, 
                 health = httpx.get(f"{url}/health", timeout=5, trust_env=False).raise_for_status().json()
             except httpx.HTTPError as exc:
                 return (f"cannot reach the master at {url} ({type(exc).__name__}: {exc}). Is it running (`./moe serve`)? "
-                        "Are both laptops on the same Wi-Fi? See 'Troubleshooting' in docs/LAPTOP_SETUP.md")
+                        "Are both laptops on the same Wi-Fi? See 'Problems and fixes' in docs/LAPTOP_SETUP.md")
             return None
 
         health = {}
@@ -219,7 +219,7 @@ def run(env_path: Path | None = None, yes: bool = False, download: bool = True, 
             numbers = model_numbers(model_id, pinned_revision(model_id), dtype)
         except Exception as exc:  # network, disk, certificates
             typer.secho(f"  ✗ could not download the model: {type(exc).__name__}: {exc}\n"
-                        "    See 'Troubleshooting' in docs/LAPTOP_SETUP.md, then run ./moe setup again.", fg="red")
+                        "    See 'Problems and fixes' in docs/LAPTOP_SETUP.md, then run ./moe setup again.", fg="red")
             raise typer.Exit(1)
         w.ok(f"model ready in {numbers['folder']}")
     num_experts = numbers["num_experts"] if numbers else 32

@@ -1,119 +1,96 @@
-# Setting up a laptop (no Docker)
+# Laptop setup: the cluster across several laptops
 
-This guide turns a fresh laptop into one node of the cluster: either the **master** (the laptop you chat with,
-which runs the shared parts of the model) or a **worker** (a laptop that holds some of the experts and
-computes them when the master asks). Every laptop runs the same code, straight on the laptop, with no Docker.
+This guide runs the cluster across **several laptops on the same Wi-Fi**, straight on each laptop, with no
+Docker. One laptop is the **master**: you chat with it, and it runs the shared parts of the model. The others
+are **workers**: each holds some of the experts and computes them when the master asks.
 
-> **Want an AI agent to do it?** Open Claude Code in the cloned repo and say:
+- **The master laptop:** [section 2](#2-the-master-laptop)
+- **A worker laptop:** [section 3](#3-a-worker-laptop)
+- **Everything on one computer in Docker instead:** [DOCKER_SETUP.md](DOCKER_SETUP.md)
+
+> **Want an AI agent to set up a laptop?** Open Claude Code in the cloned repo and say:
 > **"Read docs/LAPTOP_HANDOFF.md and set up this laptop."** It follows this guide and asks you only for the
-> few answers it can't find by itself.
+> answers it can't find by itself.
 
 **Words used here**
 
 | Word | Meaning |
 |---|---|
-| **Node** | One laptop taking part in the cluster. |
-| **Master** | The one node that receives chat requests, runs the shared parts of the model, and sends expert work to the workers. Exactly one. |
-| **Worker** | A node that holds some experts and computes them for the master. Zero, one or many. |
-| **Expert** | One of the 32 small sub-networks in each layer of the model (numbered 0–31). Each token uses 8 of them per layer. Together, the laptops must hold all 32. |
-| **IP address** | A laptop's number on the Wi-Fi, e.g. `192.168.1.21`. Other laptops use it to reach this one. |
+| **Master** | The one laptop that receives chat requests, runs the shared parts of the model, and sends expert work to the workers. |
+| **Worker** | A laptop that holds some experts and computes them for the master. One, two or many. |
+| **Expert** | One of the 32 small parts in each layer of the model (numbered 0–31). Together, the laptops must hold all 32. |
+| **IP address** | A laptop's number on the Wi-Fi, e.g. `192.168.1.10`. Other laptops use it to reach this one. |
 | **Port** | Which "door" on the laptop the program listens at: 8000 for the master, 8100 for a worker. |
-| **Cluster token** | A shared password. The master makes one, and every worker types the same one. Without it, anyone on the Wi-Fi could send work to your laptops. |
-| **`node.env`** | A small text file at the top of the repo with this laptop's settings, one `NAME=value` per line. `./moe setup` writes it, and every start reads it. Never committed to git (it holds the token). |
-| **venv (`.venv`)** | A private folder with its own Python and packages, so this project's exact versions never clash with anything else on the laptop. |
+| **Cluster token** | A shared password. The master makes one, and every worker types the same one. |
+| **`node.env`** | A small settings file at the top of the repo, written by `./moe setup` and read at every start. Never committed to git (it holds the token). |
+| **venv (`.venv`)** | A private folder with its own Python and packages, so this project's versions don't clash with anything else. |
 
 ---
 
-## The short version
-
-**First time, on each laptop (master first):**
-
-```bash
-git clone <this repo's URL> distributed-inferencing
-cd distributed-inferencing
-./scripts/install.sh        # Python environment + packages (+ the web page, if Node.js is installed)
-./moe setup                 # a few questions -> node.env (also downloads the model, ~2.7 GB)
-./moe serve                 # on the master
-./moe join                  # on a worker
-```
-
-**Every time after that:**
-
-```bash
-cd distributed-inferencing
-./moe serve                 # master (start it first)
-./moe join                  # each worker
-./moe status                # from any laptop: every node, its health and its experts
-```
-
-Then open **`http://<master's IP>:8000`** in a browser on any laptop (or phone) on the same Wi-Fi.
-
-The rest of this guide explains each step, and how to do it all by hand.
-
----
-
-## 1. What each laptop needs first
+## 1. Before you start (every laptop)
 
 | Need | macOS | Linux (Ubuntu/Debian) |
 |---|---|---|
-| **git** | `xcode-select --install` (once) | `sudo apt install git` |
-| **Python 3.12** | `brew install python@3.12` ([Homebrew](https://brew.sh)), or the installer from python.org | `sudo apt install python3.12 python3.12-venv` (Ubuntu 24.04 already has 3.12; `-venv` is the part that creates virtual environments) |
-| **Node.js 24** (master only, for the web page) | `brew install node` | see [nodejs.org](https://nodejs.org) |
-| **Disk** | ~5 GB free: ~2 GB of packages and 2.7 GB for the Granite model | same |
-| **Memory** | ~1–2 GB free for a worker, ~2.5 GB for the master (Granite) | same |
-| **Network** | All laptops on the **same Wi-Fi** (not a "guest" network, which usually stops laptops from seeing each other) | same |
+| **git** | `xcode-select --install` | `sudo apt install git` |
+| **Python 3.12** | `brew install python@3.12` ([Homebrew](https://brew.sh)) | `sudo apt install python3.12 python3.12-venv` |
+| **Node.js** (master only, for the web page) | `brew install node` | see [nodejs.org](https://nodejs.org) |
+| **Disk** | ~5 GB free (packages + the 2.7 GB model) | same |
+| **Memory** | ~1–2 GB free for a worker, ~2.5 GB for the master | same |
 
-**Windows** isn't supported directly. Use WSL2 (Ubuntu inside Windows) and follow the Linux column. WSL2 needs
-extra port-forwarding before other laptops can reach it, so it's best avoided for workers.
-
-Check Python:
+Check Python, which must say 3.12.x (3.11 is too old):
 
 ```bash
-python3.12 --version        # Python 3.12.x
-python3.12 -m venv --help   # prints help = the venv command exists (if not, on Linux: sudo apt install python3.12-venv)
+python3.12 --version
 ```
+
+**Put all laptops on the same Wi-Fi.** On each laptop, find its IP address:
+
+```bash
+ipconfig getifaddr en0      # macOS
+hostname -I                 # Linux
+```
+
+The first three numbers should match on all laptops, e.g. `10.189.119.60` and `10.189.119.201`. If they
+don't, the laptops are on different networks and can't reach each other. Office and guest Wi-Fi sometimes
+block laptops from talking to each other: if that happens, use a phone hotspot or home Wi-Fi for all of them.
+
+**Windows** isn't supported directly. Use WSL2 (Ubuntu inside Windows) and follow the Linux column.
 
 ---
 
-## 2. Get the code and install
+## 2. The master laptop
+
+Set up the master **first**: a worker's setup asks the master which experts are still free.
+
+### First time
+
+**a) If the Docker cluster is running on this laptop, stop it.** Its master uses port 8000, the port the real
+master needs:
 
 ```bash
-git clone <this repo's URL> distributed-inferencing
+docker compose -f docker/docker-compose.yml down
+```
+
+(Or keep it running and choose another port, like 8001, in step c.)
+
+**b) Get the code and install:**
+
+```bash
+git clone git@github.com:umar1997/distributed-inferencing.git
 cd distributed-inferencing
-./scripts/install.sh
+./scripts/install.sh        # creates .venv, installs the packages, builds the web page (a few minutes)
 ```
 
-`install.sh` does four things (and is safe to run again, e.g. after `git pull`):
+It must end with `Done. Next: ./moe setup`.
 
-1. Finds Python 3.12. If it isn't there, it prints the install command for your system.
-2. Creates `.venv` with `python3.12 -m venv .venv`.
-3. Installs the exact package versions from `requirements.txt` into `.venv`. On Linux it takes PyTorch's CPU-only
-   build, which avoids several GB of graphics-card libraries.
-4. Builds the web page (`ui/` → `ui/dist`) if Node.js is installed. Only the master needs this; workers skip it.
-
-You never need to "activate" the environment. The `./moe` command always uses `.venv` by itself.
-
-### By hand (what install.sh runs)
-
-```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
-.venv/bin/python -c "import torch, transformers, moe_dist; print('OK', torch.__version__)"
-
-# master only, for the web page:
-cd ui && npm ci && npm run build && cd ..
-```
-
----
-
-## 3. Set up the master (do this laptop first)
+**c) Set up:**
 
 ```bash
 ./moe setup
 ```
 
-Answer `master` to the first question. Enter accepts the suggestion in `[brackets]`:
+Answer **`master`** to the first question, the **number of laptops** when asked, and press **Enter** for the rest.
+The suggestion in `[brackets]` is what Enter picks:
 
 ```
 Is this laptop the master or a worker? (master / worker) [worker]: master
@@ -124,13 +101,12 @@ Port to listen on [8000]:
 
 Getting the model ibm-granite/granite-3.0-1b-a400m-instruct (only the first time; it is several GB)...
   ✓ model ready in ~/.cache/huggingface/hub/...
-How many laptops will take part, this one included? [3]: 3
+How many laptops will take part, this one included? [3]: 2
   Suggested split (each worker's setup suggests its share again):
-    this master  experts 0-10
-    worker 1     experts 11-21
-    worker 2     experts 22-31
-Experts this laptop holds (0-31, e.g. 0-9 or 0,4,8 or none) [0-10]:
-  ✓ 11 experts x 75.5 MB + shared parts + program: needs about 2.0 GB; 20.0 GB free now (of 36.0 GB)
+    this master  experts 0-15
+    worker 1     experts 16-31
+Experts this laptop holds (0-31, e.g. 0-9 or 0,4,8 or none) [0-15]:
+  ✓ 16 experts x 75.5 MB + shared parts + program: needs about 2.4 GB; 20.0 GB free now (of 36.0 GB)
 
 Saved to node.env.
 Start the master:   ./moe serve
@@ -139,32 +115,71 @@ Then on each worker run ./moe setup and answer:
   cluster token    = k3J9xQ2mP7vR1tYb
 ```
 
-**Write down the two lines at the end** (the master's address and the cluster token). Every worker needs them.
-You can look them up again at any time: `cat node.env` shows the token, and setup prints the address.
+**d) Write down the two lines at the end:** the master's address and the cluster token. Every worker needs
+them. To look them up later: the token is the `CLUSTER_TOKEN=` line in `node.env`, and the address is this
+laptop's IP (`ipconfig getifaddr en0`) plus the port.
 
-Then start it, and leave this terminal open:
+**e) Start it, and leave this terminal open:**
 
 ```bash
 ./moe serve
 ```
 
-Until the workers join, the master says some experts are missing and refuses chat requests. That's expected.
+Until the workers join, it says some experts are missing and refuses chat requests. That's expected.
 
-**macOS:** if the firewall is on, the first start pops up *"Do you want the application python to accept incoming network connections?"*.
-Click **Allow**, or the workers can't reach the master.
+If macOS asks *"Do you want the application python to accept incoming network connections?"*, click **Allow**.
+
+### Every time after
+
+```bash
+cd distributed-inferencing
+./moe serve
+```
+
+- **The IP may have changed** (Wi-Fi often hands out a new one after a restart). Check with
+  `ipconfig getifaddr en0`. If it changed, the workers need the new address (section 3, "Every time after").
+- **After a `git pull`** (new code), run `./scripts/install.sh` once before starting. Do it on every laptop:
+  they must all run the same code.
+- **To stop:** `Ctrl+C`. The workers keep trying to reach the master, and join again by themselves when it's back.
 
 ---
 
-## 4. Set up each worker
+## 3. A worker laptop
 
-With the master running:
+### First time
+
+**a) Get the code and install:**
+
+```bash
+git clone git@github.com:umar1997/distributed-inferencing.git
+cd distributed-inferencing
+./scripts/install.sh
+```
+
+**b) Check you can reach the master** (it must be running). Use the address you wrote down:
+
+```bash
+curl -m 5 http://192.168.1.10:8000/health
+.venv/bin/python -c "import httpx; print(httpx.get('http://192.168.1.10:8000/health', timeout=5).text[:80])"
+```
+
+Both must print `{"status":"ok", ...}`.
+
+- **`curl` fails:** the laptops can't reach each other. Check they're on the same Wi-Fi (section 1).
+- **`curl` works, but the second line says `No route to host`** (macOS): macOS is blocking Python from the
+  local network. Go to System Settings → Privacy & Security → **Local Network**, switch on your terminal app
+  (Terminal, iTerm, VS Code, …), **quit it completely (⌘Q)** and reopen it.
+
+**c) Set up:**
 
 ```bash
 ./moe setup
 ```
 
+Answer **`worker`**, the **master's address** and the **token**, and press **Enter** for the rest:
+
 ```
-Is this laptop the master or a worker? (master / worker) [worker]:
+Is this laptop the master or a worker? (master / worker) [worker]: worker
 Master's address (its IP, e.g. 192.168.1.10; port 8000 unless you changed it): 192.168.1.10
   ✓ reached master 'master': model ibm-granite/granite-3.0-1b-a400m-instruct, bf16, loaded
 Cluster token (the same one as on the master):
@@ -175,38 +190,49 @@ This laptop's address for the master to reach it (Enter = 'auto': found at every
 
 Getting the model ...
   ✓ model ready in ...
-  Experts no other laptop holds yet: 11-31
-How many more workers will you set up after this one? (they share the free experts) [0]: 1
-Experts this laptop holds (0-31, e.g. 0-9 or 0,4,8 or none) [11-21]:
-  ✓ 11 experts x 75.5 MB + program: needs about 1.3 GB; 5.2 GB free now (of 8.0 GB)
+  Experts no other laptop holds yet: 16-31
+How many more workers will you set up after this one? (they share the free experts) [0]:
+Experts this laptop holds (0-31, e.g. 0-9 or 0,4,8 or none) [16-31]:
+  ✓ 16 experts x 75.5 MB + program: needs about 1.6 GB; 5.2 GB free now (of 8.0 GB)
 
 Saved to node.env.
 Start this worker:  ./moe join
 ```
 
-What setup checks for you:
-- **It can reach the master.** If not, it says so and explains what to look at (see Troubleshooting).
-- **The token is right.** It asks the master, so a typo is caught now, not at the first start.
-- **Which experts are free.** It asks the master which experts no running laptop holds, and suggests your share.
-- **The model** is the one the master runs (same name, version and number format), downloaded now.
-- **Memory:** whether your experts fit in this laptop's free memory.
+Things to know:
 
-Then start it, and leave this terminal open:
+- **The master's address:** if the master doesn't use port 8000, type the port too, e.g. `192.168.1.10:8001`.
+- **"Port to listen on" is this worker's own port.** Keep 8100: it has nothing to do with the master's port.
+- **"How many more workers after this one?"** With one worker, answer 0 and it takes all the free experts. With
+  more, the free experts are shared. For the first of two workers, answer 1.
+
+**d) Start it, and leave this terminal open:**
 
 ```bash
 ./moe join
 ```
 
-You should see `registered with master http://192.168.1.10:8000 as http://192.168.1.21:8100`. On macOS, click
-**Allow** on the network pop-up here too.
+You should see `registered with master http://192.168.1.10:8000 as http://192.168.1.21:8100`. If macOS asks
+about incoming network connections, click **Allow**.
 
-**Why "auto" for the address:** home Wi-Fi often gives a laptop a different IP after a restart. With `auto`, the
-worker looks up its current IP at every start. It picks the network card that leads to the master, and skips VPN
-or company security tunnels. Type a fixed IP only if `auto` picks the wrong one.
+### Every time after
+
+The master must be running first.
+
+```bash
+cd distributed-inferencing
+./moe join
+```
+
+- **If the master's IP changed:** open `node.env`, change the `MASTER_ADDR=` line to the new address (e.g.
+  `MASTER_ADDR=192.168.1.15:8000`), and start again. Or, for one start only: `./moe join --master 192.168.1.15:8000`.
+- **This worker's own IP** is found again at every start (`auto`), so nothing to do if it changes.
+- **To stop:** `Ctrl+C` (the master notices within 15 seconds), or `./moe leave` from a second terminal on this
+  laptop (it tells the master first).
 
 ---
 
-## 5. Check that it all works
+## 4. Check it all works
 
 From any laptop:
 
@@ -216,43 +242,77 @@ From any laptop:
 
 ```
 NODE      STATUS   ADDRESS                    RTT now  RTT p95  RAM free  EXPERTS  REASON
-master    healthy  (master)                   -        -        -         0-10     loaded
-laptop-b  healthy  http://192.168.1.21:8100   6.1 ms   14.2 ms  5.02 GB   11-21    12 good contacts in a row
-laptop-c  healthy  http://192.168.1.22:8100   5.4 ms   11.9 ms  9.40 GB   22-31    12 good contacts in a row
+master    healthy  (master)                   -        -        -         0-15     loaded
+laptop-b  healthy  http://192.168.1.21:8100   21.2 ms  131.9 ms 15.98 GB  16-31    45 good contacts in a row
 
 coverage: OK (every expert is held by a usable node)
 ```
 
-- **RTT** (round-trip time) is how long a tiny message takes to the worker and back. Under ~20 ms is good on Wi-Fi.
-- **coverage: OK** means the laptops hold all 32 experts between them, so chat works.
+- **healthy** on every line, and **coverage: OK** at the end: all 32 experts are held, so chat works.
+- **RTT** (round-trip time) is how long a tiny message takes to the worker and back. Lower is faster.
 
-Then:
-- **Web page:** open `http://192.168.1.10:8000`, chat, and watch which laptop computes each expert.
-- **API:** `curl http://192.168.1.10:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Hello"}]}'`
-- **Tests (optional, on any laptop):** `.venv/bin/python -m pytest -q -m "not model and not cluster"` runs the quick
-  tests, which need no running cluster.
+Then open **`http://<master's IP>:<port>`** in a browser, e.g. `http://192.168.1.10:8000`, on any laptop or phone
+on the same Wi-Fi. On the left you chat. On the right, the experts each token uses light up in the colour of the
+laptop that computed them.
 
 ---
 
-## 6. Example values
+## 5. Example values
 
-Two complete examples of what you would type and what ends up in each laptop's `node.env`. The IPs and token
-are made up: use your own (setup shows them).
+The IPs and the token below are made up; setup shows your own.
+
+### Master + 1 worker (2 laptops)
+
+This is the setup that was first run for real (with the master on port 8001, because the Docker master still had 8000).
+
+| | Master | Worker |
+|---|---|---|
+| Role | `master` | `worker` |
+| Name | `master` | `laptop-b` |
+| IP (shown by setup) | 192.168.1.10 | 192.168.1.21 |
+| Master's address | – | `192.168.1.10` |
+| Cluster token | `k3J9xQ2mP7vR1tYb` (made by setup) | `k3J9xQ2mP7vR1tYb` |
+| "How many laptops?" / "How many more workers after this one?" | `2` | `0` |
+| Experts | `0-15` | `16-31` |
+| Start with | `./moe serve` | `./moe join` |
 
 ### Master + 2 workers (3 laptops)
 
 | | Master | Worker 1 | Worker 2 |
 |---|---|---|---|
-| Role | `master` | `worker` | `worker` |
 | Name | `master` | `laptop-b` | `laptop-c` |
-| IP (shown by setup) | 192.168.1.10 | 192.168.1.21 | 192.168.1.22 |
+| IP | 192.168.1.10 | 192.168.1.21 | 192.168.1.22 |
 | Master's address | – | `192.168.1.10` | `192.168.1.10` |
-| Cluster token | `k3J9xQ2mP7vR1tYb` (made by setup) | `k3J9xQ2mP7vR1tYb` | `k3J9xQ2mP7vR1tYb` |
-| "How many laptops?" / "more workers after this one?" | `3` | `1` | `0` |
+| Cluster token | `k3J9xQ2mP7vR1tYb` | same | same |
+| "How many laptops?" / "How many more workers after this one?" | `3` | `1` | `0` |
 | Experts | `0-10` | `11-21` | `22-31` |
-| Start with | `./moe serve` | `./moe join` | `./moe join` |
 
-`node.env` on worker 1 (`laptop-b`):
+### Master + 3 workers (4 laptops)
+
+| | Master | Worker 1 | Worker 2 | Worker 3 |
+|---|---|---|---|---|
+| Name | `master` | `laptop-b` | `laptop-c` | `laptop-d` |
+| IP | 192.168.1.10 | 192.168.1.21 | 192.168.1.22 | 192.168.1.23 |
+| Master's address | – | `192.168.1.10` | `192.168.1.10` | `192.168.1.10` |
+| Cluster token | `k3J9xQ2mP7vR1tYb` | same | same | same |
+| "How many laptops?" / "How many more workers after this one?" | `4` | `2` | `1` | `0` |
+| Experts | `0-7` | `8-15` | `16-23` | `24-31` |
+
+### What `node.env` looks like
+
+On the master:
+
+```
+NODE_ROLE=master
+NODE_ID=master
+LISTEN_PORT=8000
+EXPERT_IDS=0-10
+CLUSTER_TOKEN=k3J9xQ2mP7vR1tYb
+MODEL_ID=ibm-granite/granite-3.0-1b-a400m-instruct
+DTYPE=bf16
+```
+
+On worker 1 (`laptop-b`, 3 laptops):
 
 ```
 NODE_ROLE=worker
@@ -266,77 +326,79 @@ MODEL_ID=ibm-granite/granite-3.0-1b-a400m-instruct
 DTYPE=bf16
 ```
 
-`node.env` on the master:
-
-```
-NODE_ROLE=master
-NODE_ID=master
-LISTEN_PORT=8000
-EXPERT_IDS=0-10
-CLUSTER_TOKEN=k3J9xQ2mP7vR1tYb
-MODEL_ID=ibm-granite/granite-3.0-1b-a400m-instruct
-DTYPE=bf16
-```
-
-### Master + 3 workers (4 laptops)
-
-| | Master | Worker 1 | Worker 2 | Worker 3 |
-|---|---|---|---|---|
-| Name | `master` | `laptop-b` | `laptop-c` | `laptop-d` |
-| IP | 192.168.1.10 | 192.168.1.21 | 192.168.1.22 | 192.168.1.23 |
-| Master's address | – | `192.168.1.10` | `192.168.1.10` | `192.168.1.10` |
-| Cluster token | `k3J9xQ2mP7vR1tYb` | same | same | same |
-| "How many laptops?" / "more workers after this one?" | `4` | `2` | `1` | `0` |
-| Experts | `0-7` | `8-15` | `16-23` | `24-31` |
-
 ### Uneven splits
 
-The suggestions are even shares, but you can type anything:
-- **A small laptop takes fewer experts.** For example, on an 8 GB laptop: master `0-15`, laptop-c `16-25`, laptop-a (8 GB) `26-31`.
-- **The master takes more experts.** Experts on the master need no Wi-Fi at all, so answers come faster.
-- **The rule:** together, the laptops hold every expert 0–31. Two laptops may hold the same experts (a backup);
-  the master uses one of them.
+The suggestions are even shares, but you can type any experts:
 
-Exactly what the master and workers do with these values is in `IMPLEMENTATION.md`, section 3.
+- **A small laptop takes fewer.** For example, with an 8 GB laptop: master `0-15`, laptop-c `16-25`, the 8 GB laptop `26-31`.
+- **The master takes more.** Experts on the master need no Wi-Fi at all, so answers come faster.
+- **The one rule:** together, the laptops hold every expert 0–31. Two laptops may hold the same experts (a
+  backup); the master uses one of them.
+
+More laptops means less memory per laptop, but **not** more speed. Every worker is another Wi-Fi round trip
+in each of the 24 layers, and the slowest one decides how long a layer takes.
 
 ---
 
-## 7. Day to day
+## 6. Changing things
 
 | I want to… | Do this |
 |---|---|
-| Start everything | master: `./moe serve`; then each worker: `./moe join` |
-| Stop a worker | `Ctrl+C` in its terminal (the master notices within 15 s), or `./moe leave` from another terminal on that laptop (it tells the master first) |
-| Stop the master | `Ctrl+C`. Workers keep trying to reach it, and join again by themselves when it's back. |
-| Give a laptop other experts | Edit `EXPERT_IDS=` in its `node.env` (or run `./moe setup` again, which keeps your other answers), then restart it |
-| Run a worker once with other settings, without changing `node.env` | `./moe join --experts 0-5` (options win over the file) |
-| Get the newest code | `git pull && ./scripts/install.sh`, on **every** laptop (all laptops must run the same version) |
-| Keep the laptop awake | On a Mac, `./moe serve` / `./moe join` already block idle sleep (`caffeinate`). Closing the lid still sleeps the laptop: keep it open, and plugged in. |
-
-Without the `./moe` wrapper (e.g. on a system without bash): `.venv/bin/python -m moe_dist.cli join` (or `serve`,
-`setup`, `status`) does the same, run from the repo folder.
-
-Setting up by hand without the wizard: copy `node.env.example` to `node.env`, fill in the values (section 6
-shows two examples), and run `./moe download` once to get the model.
+| Give a laptop other experts | Edit `EXPERT_IDS=` in its `node.env` (or run `./moe setup` again: it keeps your other answers), then restart it |
+| Start a worker once with other settings, without changing `node.env` | `./moe join --experts 0-5` or `./moe join --master 192.168.1.15:8000` |
+| Add another worker later | Set it up like any worker. Setup shows which experts are free. If none are free, take some away from another laptop first. |
+| Get the newest code | `git pull && ./scripts/install.sh` on **every** laptop, then restart each one |
+| See more detail in the logs | Add `LOG_LEVEL=debug` to `node.env`: one line per token per layer (lots of output) |
+| Keep the laptop awake | On a Mac, `./moe serve` / `./moe join` already stop it from sleeping by itself. Closing the lid still sleeps it: keep it open and plugged in. |
 
 ---
 
-## 8. Troubleshooting
+## 7. Problems and fixes
 
-| Problem | What to check |
+| Problem | Fix |
 |---|---|
-| Setup: **"cannot reach the master"** | Is `./moe serve` running on the master? Same Wi-Fi (not a guest network)? Is the IP right (`./moe setup` on the master prints it; on macOS: System Settings → Wi-Fi → Details)? Did you click **Allow** on the master's network pop-up? Is the port right? Type it with the IP if the master doesn't use 8000, e.g. `192.168.1.10:8001` (the error shows the address it tried). Test by hand: `curl http://192.168.1.10:8000/health` |
-| **`curl` works, but setup says "cannot reach the master … No route to host"** (macOS) | macOS's **Local Network permission** is blocking Python. Since macOS 15, apps need permission to talk to other devices on the network. Apple's own tools like `curl` don't, but Python does, and it's allowed or blocked per app you start it from. Fix: System Settings → Privacy & Security → **Local Network** → switch on the app you run the commands in (Terminal, iTerm, VS Code, …), **quit that app completely (⌘Q)** and reopen it. If the app isn't listed, run the command once from Apple's Terminal app and click **Allow** on the pop-up (or restart the laptop). Check: `.venv/bin/python -c "import httpx; print(httpx.get('http://192.168.1.10:8000/health', timeout=5).text[:80])"` must print `{"status":"ok",...}` |
-| Setup or join fails only on a company laptop | A company proxy (a middleman server for web traffic) can't reach other laptops. Traffic between the laptops already skips proxy settings. If the model download fails, see the certificate row below. Run setup **yourself in a terminal**, not through an AI agent, because agents may block network access for the commands they run. |
-| macOS: clicked "Deny" by mistake | System Settings → Network → Firewall → Options: set Python to "Allow incoming connections". |
-| Setup: **"the master says this token is wrong"** | Copy it exactly from the master's `node.env` (`CLUSTER_TOKEN=` line). |
-| Worker registers, but its status is **dead** or **slow** | The master can't reach the worker back. Run `./moe status` and check the worker's ADDRESS is its real Wi-Fi IP. If `auto` picked a VPN address, set `ADVERTISE_ADDR=<its IP>:8100` in `node.env`. Then check the macOS pop-up was allowed on the worker too. |
-| **"registration refused by the master: ..."** | The reason says what differs: a different model, version or number format (`git pull` on both laptops), or a name already used by another live laptop (pick another `NODE_ID`). |
-| **SSL / certificate errors** while installing or downloading (company networks with a security filter such as Zscaler) | Point Python at the company's certificate file, then run the step again: `export SSL_CERT_FILE=/path/company-root.pem REQUESTS_CA_BUNDLE=/path/company-root.pem PIP_CERT=/path/company-root.pem` |
-| **Port already in use** | Something else uses 8000/8100: run `./moe setup` again and pick another port. Workers then type the master's address with the port, e.g. `192.168.1.10:8001`. |
-| The master **refuses chat** with "missing experts" | Some expert numbers are held by no running laptop. `./moe status` lists what's missing; start that worker, or give another laptop those experts. |
+| Setup: **"cannot reach the master"** | Is `./moe serve` running on the master? Are both laptops on the same Wi-Fi (section 1)? Is the IP right? If the master doesn't use 8000, type the port too (`192.168.1.10:8001`). The error shows the exact address it tried. |
+| **`curl` works, but setup says "No route to host"** (macOS) | macOS's **Local Network** permission is blocking Python. System Settings → Privacy & Security → Local Network → switch on your terminal app, **quit it completely (⌘Q)** and reopen it. If the app isn't listed, run the command once from Apple's own Terminal app and click **Allow** on the pop-up, or restart the laptop. |
+| Setup: **"the master says this token is wrong"** | Copy it exactly from the `CLUSTER_TOKEN=` line in the master's `node.env`. |
+| The worker joins, but shows **dead** or **slow** | The master can't reach the worker back. In `./moe status`, check the worker's ADDRESS is its real Wi-Fi IP. If it isn't (e.g. a VPN address), set `ADVERTISE_ADDR=<its IP>:8100` in the worker's `node.env`. Click **Allow** if macOS asks about incoming connections. |
+| **"registration refused by the master: ..."** | The reason says what differs: another model, version or number format (run `git pull` and `./scripts/install.sh` on both), or a name another laptop already uses (pick another `NODE_ID`). |
+| Chat says **"missing experts"** | Some experts are held by no running laptop. `./moe status` lists them: start that worker, or give another laptop those experts. |
+| **"port is already in use"** / "address already in use" | Something else uses that port, e.g. the Docker master on 8000. Stop it (section 2a), or run `./moe setup` again and pick another port. Workers then type the master's address with that port. |
+| **Certificate errors** while installing or downloading (company networks, e.g. Zscaler) | Point Python at the company's certificate file and try again: `export SSL_CERT_FILE=/path/company-root.pem REQUESTS_CA_BUNDLE=/path/company-root.pem PIP_CERT=/path/company-root.pem` |
+| Setup fails only when an AI agent runs it | Agents may block network access for the commands they run. Run `./moe setup` yourself in a terminal. |
 | `./moe: No Python environment yet` | Run `./scripts/install.sh` first. |
-| `python3.12: command not found` | Section 1. |
+| `python3.12: command not found` | Install it (section 1). |
+| `python3.12 -m venv .venv` says "ensurepip is not available" (Linux) | `sudo apt install python3.12-venv`, then run `./scripts/install.sh` again. |
 
-Logs: each terminal shows its node's log. For one line per expert call: add `LOG_LEVEL=debug` to `node.env`
-(lots of output). The logs and the web page use the same request IDs, so you can match them.
+Each terminal shows its laptop's log. The web page shows the exact text to search for in the logs
+(`req=… token=…`), so you can match what you see on the page with what each laptop did.
+
+---
+
+## 8. Doing it all by hand
+
+If you'd rather not use the install script or the setup questions, from the repo folder:
+
+```bash
+# the Python environment (what install.sh does)
+python3.12 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+.venv/bin/python -c "import torch, transformers; print('OK', torch.__version__)"    # OK 2.14.1
+
+# master only: the web page
+cd ui && npm ci && npm run build && cd ..
+
+# the settings (what ./moe setup does)
+cp node.env.example node.env      # then edit it: section 5 shows what goes in it
+./moe download                    # get the model once (~2.7 GB)
+
+# start
+./moe serve                       # master
+./moe join                        # worker
+```
+
+The extra address in the install line makes Linux download the smaller PyTorch build for computers without a
+graphics card; on a Mac it changes nothing. You never need to "activate" the venv: `./moe` always uses
+`.venv/bin/python` by itself. Without `./moe`, `.venv/bin/python -m moe_dist.cli serve` (or `join`, `setup`,
+`status`) does the same, run from the repo folder.

@@ -10,9 +10,9 @@ All numbers below were **checked on 2026-10-19** against Hugging Face and **Tran
 
 | Order | Model | Why | Where it runs |
 |---|---|---|---|
-| **1st (now)** | `ibm-granite/granite-3.0-1b-a400m-instruct` | Small (2.7 GB). Fast to download and test. Fits on the 8 GB laptop. | Steps 1, 2, 3 and first run of Step 4 |
+| **1st (now)** | `ibm-granite/granite-3.0-1b-a400m-instruct` | Small (2.7 GB). Fast to download and test. Fits even on an 8 GB laptop. | Steps 1, 2, 3 and first run of Step 4 |
 | **2nd** | `Qwen/Qwen1.5-MoE-A2.7B-Chat` | A real "Qwen" MoE with 60 experts. Much better answers. Fits across the 3 laptops in bf16. | Step 4 (real laptops) |
-| **Stretch goal** | `Qwen/Qwen3-30B-A3B-Instruct-2507` | Modern, strong model. Too big for bf16 on our laptops, so it needs int8. | Step 4, only after the Qwen1.5 run works |
+| **Stretch goal** | `Qwen/Qwen3-30B-A3B-Instruct-2507` | Modern, strong model. 61 GB in bf16: fits in memory only across all three laptops; disk space is the harder limit. | Step 4, only after the Qwen1.5 run works |
 
 **Not used:** `allenai/OLMoE-1B-7B` (from the original plan) — replaced by Qwen1.5-MoE as the "next step up". Qwen3.5 / Qwen3.6 MoE models (35B+, 256 experts, a new kind of attention, plus an image part) — too big and too complex for this project.
 
@@ -150,16 +150,16 @@ The data sent over the network is tiny. **The cost is the number of round trips*
 
 Measured with `docker/docker-compose.8gb.yml` and `scripts/memory_check.py`: all 10 golden prompts + a conversation that reached 1,229 tokens of context. **No container ran out of memory or even reached its limit.** "Program" is the processes' own memory (weights, Python, PyTorch, buffers); "file pages" are parts of files kept in memory (the weight file, libraries), which Linux frees when memory gets short, so the peaks look closer to the limits than the real need. A worker's peak comes from loading (the weights are copied out of the file), after that it uses ~1.55 GB. The master grows with the conversation (attention memory of earlier tokens and working buffers for long messages).
 
-**Qwen1.5-MoE — Step 4, real laptops (bf16).** Laptop C's RAM is still unknown, so this assumes 16 GB:
+**Qwen1.5-MoE — Step 4, real laptops (bf16).** All three laptops are 36 GB Macs, running natively (no Docker):
 
 | Node | Holds | Weights | Notes |
 |---|---|---|---|
-| Master (36 GB Mac) | shared parts + 36 slots | 3.7 + 14.9 = **18.6 GB** | Most experts here = fewest Wi-Fi calls |
-| Laptop A (8 GB) | 8 slots | **3.3 GB** | + ~1 GB overhead, Docker limit ~5 GB |
-| Laptop C (Mac, assume 16 GB) | 16 slots | **6.6 GB** | Docker limit ~9 GB |
+| Master (Laptop B) | shared parts + 20 slots | 3.7 + 8.3 = **12.0 GB** | More experts here = fewer Wi-Fi calls, and there is room for it |
+| Laptop A | 20 slots | **8.3 GB** | + ~0.5 GB program |
+| Laptop C | 20 slots | **8.3 GB** | + ~0.5 GB program |
 | **Total** | 60 slots | **28.6 GB** | |
 
-**Qwen3-30B — stretch goal (int8 experts, bf16 shared parts):** about 3.1 GB shared + 29 GB of experts = **~32 GB across all laptops**. Possible only if Laptop C has 16 GB or more. Example: master 64 slots (~17.6 GB), Laptop A 12 slots (~2.7 GB), Laptop C 52 slots (~11.8 GB).
+**Qwen3-30B — stretch goal:** in bf16, about 3.1 GB shared + 58 GB of experts = **61 GB across all laptops**, about 21 GB each on three 36 GB Macs (e.g. master shared + 42 slots ≈ 22 GB, Laptop A 43 slots ≈ 19.5 GB, Laptop C 43 slots ≈ 19.5 GB). On only two laptops, ~31 GB each leaves macOS almost nothing. With int8 experts it's ~32 GB in total (~11 GB each).
 
 **Disk space:** the 36 GB Mac has about 73 GB free. Granite (2.7 GB) and Qwen1.5 (28.6 GB) are fine. Qwen3-30B in bf16 (61 GB) would almost fill the disk, so for that model we should use the FP8 files (~31 GB) or prepare smaller per-node files (see section 6.4).
 
@@ -267,7 +267,7 @@ The router always runs on the master, using Transformers' own code, so the route
 ### 6.4 Qwen3-30B (stretch goal) — only after Qwen1.5 works on the laptops
 
 1. **Add int8 expert weights.** Store each expert's weights as int8 plus one scale number per row, and turn them back into bf16 just before use. This is our own small code, tested on Granite and Qwen1.5 first (check how much output quality changes).
-2. **Prepare per-node files.** A small tool that cuts the downloaded files into "only the experts for node X" files, so the 8 GB laptop doesn't need 61 GB of disk.
+2. **Prepare per-node files.** A small tool that cuts the downloaded files into "only the experts for node X" files, so no laptop needs 61 GB of disk.
 3. **Run the Qwen3 adapter tests**, same as Q1–Q2, then real laptops.
 4. **Expect it to be slower:** 48 layers = 48 Wi-Fi round trips per token.
 
@@ -285,5 +285,5 @@ The router always runs on the master, using Transformers' own code, so the route
 - **Exact process overhead** (Python + PyTorch + Transformers) per container: measured in Phase 2. The 8 GB numbers above assume about 1 GB.
 - **bf16 speed on each CPU:** bf16 works on both ARM and x86 in PyTorch, but its speed depends on the CPU (newer Apple chips and newer Intel/AMD chips have special bf16 instructions; older ones are slower). Measured in Phase 1.
 - **int8:** PyTorch's old built-in int8 tools don't support packed 3-D expert tensors, so int8 means our own small "int8 weight + scale" code. Not needed for Granite or Qwen1.5.
-- **Laptop A's CPU type and Laptop C's RAM:** still to fill in. They decide the Docker image types (ARM only, or ARM + x86) and the Qwen placements.
+- **The laptops:** settled. All three are 36 GB Apple Silicon Macs, so one CPU type (ARM) everywhere, and the Qwen placements above use 36 GB each.
 - **Python version:** the Mac's built-in Python is 3.9 with Transformers 4.40, which is too old for these models. The project will use its own Python 3.12 environment (and the Docker image has its own Python anyway).

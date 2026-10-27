@@ -134,6 +134,21 @@ def test_master_setup_makes_a_token_and_suggests_a_split(tmp_path):
     assert saved["CLUSTER_TOKEN"] in result.output  # shown, so it can be typed on the workers
 
 
+def test_status_on_the_master_uses_its_own_port(tmp_path, monkeypatch):
+    path = tmp_path / "node.env"
+    wizard.write_env(path, {"NODE_ROLE": "master", "LISTEN_PORT": "8001"})
+    monkeypatch.setenv("MOE_ENV_FILE", str(path))
+    asked = []
+
+    def nodes(url, timeout=None, trust_env=True):
+        asked.append(url)
+        return httpx.Response(200, json={"nodes": [], "coverage": "ok"}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr("moe_dist.cli.main.httpx.get", nodes)
+    assert CliRunner().invoke(app, ["status"]).exit_code == 0
+    assert asked == ["http://localhost:8001/api/nodes"]
+
+
 def test_join_without_settings_explains_what_to_do(monkeypatch):
     monkeypatch.delenv("MASTER_ADDR", raising=False)
     monkeypatch.delenv("EXPERT_IDS", raising=False)

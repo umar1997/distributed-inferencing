@@ -28,18 +28,18 @@ This is mainly a **learning and demo project**. Being able to clearly **see** th
 
 | Machine | RAM | CPU / OS | Role |
 |---|---|---|---|
-| Laptop A | 8 GB | [fill in: Intel/AMD or Apple, and OS] | Worker (Step 4) |
+| Laptop A (Mac) | 36 GB | Apple Silicon (ARM), macOS | Worker (Step 4) |
 | Laptop B (Mac) | 36 GB | Apple Silicon (ARM), macOS | Development machine for Steps 1–3, then master node |
-| Laptop C (Mac) | More than 8 GB (exact amount TBD) | Apple Silicon (ARM), macOS | Worker (Step 4) |
+| Laptop C (Mac) | 36 GB | Apple Silicon (ARM), macOS | Worker (Step 4) |
 
 - All laptops connect over **Wi-Fi** on the same home network. No Ethernet cables are available, so the design must work well over Wi-Fi.
 - No GPUs are used. On the Macs, Docker runs Linux containers inside a virtual machine, so the Apple GPU is not available inside Docker anyway. Everything runs on CPU.
-- Two machines are ARM (Apple Silicon). If Laptop A is Intel/AMD (x86), the Docker image must be built for **both** CPU types (a multi-architecture image).
-- Development of Steps 1–3 happens on the 36 GB Mac, so memory is not a problem during development. The 8 GB laptop must still be able to run **one worker container** in Step 4. Plan its memory use carefully.
+- All three machines are the same kind of Mac (ARM, Apple Silicon), so one CPU type is enough everywhere.
+- Development of Steps 1–3 happens on Laptop B. All three laptops have 36 GB, so memory is not tight for the starting model. Still check that the starting model could run inside 8 GB (Step 2), to prove the idea works on small laptops too.
 
 ## 4. Models
 
-**Starting model (must fit on the 8 GB laptop with all 3 containers running):**
+**Starting model (must fit inside 8 GB with all 3 containers running, so it could run on a small laptop too):**
 - `ibm-granite/granite-3.0-1b-a400m-instruct`
   - About 1.3 billion parameters in total, about 400 million used per token.
   - 32 experts per layer, 8 picked per token.
@@ -54,7 +54,7 @@ This is mainly a **learning and demo project**. Being able to clearly **see** th
 - The real memory use of each model in fp32, bf16 and int8 on CPU.
 - How each model stores its experts in code. Some models keep each expert as a separate piece. Others (I believe Granite MoE does this) keep all experts of a layer packed together in one big tensor, so giving a worker "experts 8–15" means cutting those experts out of the packed tensor. Plan for both cases.
 
-**Memory plan for the 8 GB laptop (3 containers):**
+**Memory plan for an 8 GB budget (3 containers):**
 - The master container loads only the shared parts (embeddings, attention, router, output layer) plus its own experts.
 - Each worker container loads only its own experts, never the full model.
 - Docker Desktop has a memory limit setting. Include what this limit should be, and how much memory each container should be allowed.
@@ -110,7 +110,7 @@ I want to build **only** the experts-across-workers system, but in steps. Each s
 - Add registration, heartbeats, pings and health status.
 - **Test:** output must be the same as Step 1 for the same prompts. If it changed, the bug is in the network/data-sending code, because Step 1 already proved the model code works.
 - **Test:** stop one worker container and check that the master notices and reports it correctly.
-- **Extra check:** also run the 3 containers with memory limits that fit inside 8 GB total, to prove the starting model could run on the small laptop.
+- **Extra check:** also run the 3 containers with memory limits that fit inside 8 GB total, to prove the starting model could also run on a small 8 GB laptop.
 
 ### Step 3: Clear logs and the React UI (on the 36 GB Mac)
 - Add detailed logs (see section 9).
@@ -119,10 +119,10 @@ I want to build **only** the experts-across-workers system, but in steps. Each s
 
 ### Step 4: Real laptops over Wi-Fi
 - Master: the 36 GB Mac (holds the chat UI, controller, shared model parts and some experts).
-- Workers: Laptop A (8 GB) and Laptop C (Mac).
+- Workers: Laptop A and Laptop C (both 36 GB Macs).
 - Same Docker image on each laptop (built for both CPU types if needed).
 - Workers join the master using the command-line tool, giving the master's IP and their experts.
-- Give the 8 GB laptop **fewer experts** than the others, based on its free memory.
+- A laptop with less free memory (or a slower one) can be given **fewer experts** than the others.
 - **Before running the model**, include a network check tool that measures the round-trip time between the master and each worker over Wi-Fi, and shows it in the logs and UI.
 - **Test:** the same prompts produce the same output as Step 2, now across real machines.
 - After this works with the starting model, move to a bigger model sized to the combined RAM.

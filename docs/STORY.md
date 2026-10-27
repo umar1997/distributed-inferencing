@@ -6,7 +6,7 @@ This is the story of this project, from the first idea to where we are now (the 
 
 ## 1. The idea
 
-We wanted to run one AI language model across three laptops at the same time, using only their normal processors (CPUs), no graphics cards (GPUs). The laptops are ordinary: a Mac with 36 GB of memory, a laptop with only 8 GB, and a second Mac. On its own, the small laptop could never hold a big model. Together, the three have much more memory than any one of them.
+We wanted to run one AI language model across three laptops at the same time, using only their normal processors (CPUs), no graphics cards (GPUs). The laptops are ordinary: three Macs with Apple Silicon processors and 36 GB of memory each. The biggest model we look at needs 61 GB, which no single one of them can hold. Together, the three have 108 GB.
 
 The trick that makes this possible is a special kind of model called a **Mixture-of-Experts** model, or **MoE** for short. A normal language model is built from layers, and in every layer every word goes through the same big block of maths. An MoE model replaces that big block with many smaller blocks called **experts**, plus a tiny part called the **router**. For every word, the router looks at it and picks a few experts (for example 8 out of 32) that should work on it. The other experts do nothing for that word.
 
@@ -45,7 +45,7 @@ Some words first. A **parameter** is one number inside the model; a "1 billion p
 | Qwen1.5-MoE-A2.7B | second model (real laptops) | 28.6 GB | 60 | 4 | 24 | 3.7 GB |
 | Qwen3-30B-A3B | stretch goal | 61 GB (~32 GB in int8) | 128 | 8 | 48 | 3.1 GB |
 
-**Granite** is our test model: small (2.7 GB), quick to download, and small enough that all three parts would fit on the 8 GB laptop. Its answers are not very clever, but it is a real MoE model with the same structure as the big ones. **Qwen1.5-MoE** is the "real" target: much better answers, and at 28.6 GB too big for any single laptop except the 36 GB Mac, which makes it a good showcase for spreading experts. **Qwen3-30B** is a modern, strong model, but even split three ways it needs the smaller int8 format, so it is a stretch goal. The original plan named OLMoE as the second model; we replaced it with Qwen1.5-MoE. We also ruled out the newest Qwen3.5/3.6 models: they are much bigger and add new kinds of attention and an image part, too complex for this project.
+**Granite** is our test model: small (2.7 GB), quick to download, and small enough that all three parts would fit even on an 8 GB laptop. Its answers are not very clever, but it is a real MoE model with the same structure as the big ones. **Qwen1.5-MoE** is the "real" target: much better answers, and at 28.6 GB it only just fits on one of our 36 GB Macs, which makes it a good showcase for spreading experts. **Qwen3-30B** is a modern, strong model, but at 61 GB it needs all three laptops (and a lot of disk), so it is a stretch goal. The original plan named OLMoE as the second model; we replaced it with Qwen1.5-MoE. We also ruled out the newest Qwen3.5/3.6 models: they are much bigger and add new kinds of attention and an image part, too complex for this project.
 
 The most important number in that table is the last column. **Around 90 % of each model is experts** (Granite 91 %, Qwen1.5 87 %, Qwen3 95 %). The shared parts that every token needs are small. So if we spread the experts, we spread almost all of the memory. That is why the whole idea is worth doing.
 
@@ -153,7 +153,7 @@ Only healthy and slow workers get work. A worker with a different model, version
 
 **Talking like OpenAI (Phase 2.3).** The master now offers the OpenAI-style chat API, including **streaming**: the answer is sent piece by piece while it is being made, like ChatGPT typing, instead of all at once at the end. It supports the usual settings people expect: **temperature** (how random the answer is; 0 means always the most likely token, and then we get exactly the golden answer), **top_p** (only pick from the most likely tokens), **max_tokens**, **stop** words, and a **seed** (a starting number that makes a random answer repeatable). Requests are answered one at a time, and others wait in line. If someone closes their chat in the middle, the master stops and moves on. We tested it with the official OpenAI Python library, and then with **Open WebUI**, a free ChatGPT-like website you run yourself: it found our model and chatted with the cluster without any changes.
 
-**Will it fit on the small laptop? (Phase 2.4).** Finally, we gave each container a hard memory limit, as a small laptop would: master 2.5 GB, workers 2 GB each, 6.5 GB in total, and no "swap" (using the disk as extra memory), so that a container that needs too much is really stopped instead of quietly getting slow. We ran all ten test prompts and a long conversation (over 1,200 tokens of context, which makes the master's attention memory grow).
+**Would it fit on a small laptop? (Phase 2.4).** Finally, we gave each container a hard memory limit, as a small laptop would: master 2.5 GB, workers 2 GB each, 6.5 GB in total, and no "swap" (using the disk as extra memory), so that a container that needs too much is really stopped instead of quietly getting slow. We ran all ten test prompts and a long conversation (over 1,200 tokens of context, which makes the master's attention memory grow).
 
 | Container | Limit | Highest use | What the program itself needs |
 |---|---|---|---|
@@ -193,7 +193,7 @@ Testing the page in a real browser found three bugs that the code's own tests co
 
 ## 10. Getting ready for real laptops: no Docker
 
-Step 4 is the real thing: three laptops on Wi-Fi. The original plan was to run the same Docker image on every laptop. We changed that, for the reason Step 2 had shown: on a Mac, Docker runs everything inside a hidden virtual machine, and there the expert work was **2–15× slower**. Two of the three laptops are Macs. So the laptops now run the code **directly** ("natively"): clone the repo, create a Python environment, start the node. Docker stays for the three-containers-on-one-Mac test cluster.
+Step 4 is the real thing: three laptops on Wi-Fi. The original plan was to run the same Docker image on every laptop. We changed that, for the reason Step 2 had shown: on a Mac, Docker runs everything inside a hidden virtual machine, and there the expert work was **2–15× slower**. All three laptops are Macs. So the laptops now run the code **directly** ("natively"): clone the repo, create a Python environment, start the node. Docker stays for the three-containers-on-one-Mac test cluster.
 
 That meant a new laptop had to be easy to set up without Docker. Each laptop really has only a few things of its own: whether it is the master or a worker, its name, which experts it holds, its IP address, and the master's address. We discussed two ways to give it these: a **wizard** (a program that asks questions) or a **settings file**. We chose both, working together. The wizard asks once, checks the answers, and writes them into a small settings file, `node.env`. Every later start just reads the file, so no questions. To change something, you edit the file or run the wizard again.
 
@@ -236,7 +236,7 @@ git clone <repo> && cd distributed-inferencing
 
 ## 11. Could the bigger Qwen models run?
 
-With everything working for Granite, the natural question was: if every laptop were like the 36 GB Mac, could the big Qwen models run across two or three of them? Using the measured sizes from section 3:
+With everything working for Granite, the natural question was: since every laptop is a 36 GB Mac like this one, could the big Qwen models run across two or three of them? Using the measured sizes from section 3:
 
 | Model | Size (bf16) | This Mac + 1 other | This Mac + 2 others |
 |---|---|---|---|
@@ -271,7 +271,7 @@ What's not done yet: running on the real laptops over Wi-Fi, and speed.
 
 *Different computers round differently.* We learned that macOS and Linux already give different answers in bf16. Across three real laptops, each expert runs on a different machine, so one answer mixes their rounding. We therefore decided on two checks. In **fp32**, the answers must be **exactly** the golden ones (macOS and Linux agreed perfectly in fp32). In **bf16**, the normal setting, a different token is only allowed where the model was almost undecided between its two best tokens (a "near-tie"), and we also read some answers by hand to make sure they make sense.
 
-*Memory will be fine for Granite, and planned for Qwen.* Granite fits easily. For Qwen1.5-MoE, most experts go on the 36 GB Mac, which also means fewer Wi-Fi trips, and the 8 GB laptop gets only a few experts. The exact split depends on Laptop C's memory, which we still need to find out.
+*Memory will be fine for Granite, and planned for Qwen.* Granite fits easily. For Qwen1.5-MoE, three 36 GB Macs leave plenty of room: about 10 GB each, or more experts on the master, which also means fewer Wi-Fi trips.
 
 *Then the bigger models.* Once Granite works across the laptops, we switch to Qwen1.5-MoE with its own adapter and its own golden files. Then, if memory and disk allow (section 11), we try Qwen3-30B.
 

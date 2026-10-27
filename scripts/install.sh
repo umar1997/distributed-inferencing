@@ -53,4 +53,4 @@ else
   echo "Node.js 24 (macOS: brew install node, Linux: https://nodejs.org) and run this script again."
 fi
 
-say "Done. Next: ./moe setup   (docs/LAPTOP_SETUP.md, step 3)"
+say "Done. Next: ./moe setup   (docs/LAPTOP_SETUP.md: section 2 on the master, section 3 on a worker)"

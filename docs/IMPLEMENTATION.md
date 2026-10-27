@@ -49,7 +49,7 @@ On a home network the number of round trips decides the speed, so this rule matt
 
 At every layer the master waits for the slowest node, so one slow laptop slows everything down. In order of effort:
 
-1. **Give the slow laptop fewer experts** (fewer experts → it is picked less often). This is already in the plan for the 8 GB laptop.
+1. **Give the slow laptop fewer experts** (fewer experts → it is picked less often). Useful if one laptop turns out slower or busier than the others.
 2. **Put the most-used experts on the master** (no network at all). Phase 4.3 measures which experts are picked most often and suggests a placement.
 3. **Backup copies** (Phase 4.4) let the master send work to the faster copy.
 4. Show "time spent waiting on each node" in the logs and UI, so the slow node is obvious.
@@ -81,7 +81,7 @@ At every layer the master waits for the slowest node, so one slow laptop slows e
 
 ```
 distributed-inferencing/
-├── requirements.txt            # pinned dependency versions (install: docs/SETUP.md)
+├── requirements.txt            # pinned dependency versions (install: scripts/install.sh)
 ├── .venv/                      # local Python environment (git-ignored)
 ├── moe                         # the one command on a laptop: ./moe setup | serve | join | status | leave
 ├── node.env.example            # a laptop's settings; ./moe setup writes the real node.env (git-ignored)
@@ -155,7 +155,7 @@ distributed-inferencing/
     ├── PLAN.md
     ├── AVAILABLE_MODELS.md
     ├── IMPLEMENTATION.md       # this file
-    ├── SETUP.md                # Python environment, step by step
+    ├── DOCKER_SETUP.md         # the cluster in Docker on one computer, tests (was SETUP.md)
     ├── LAPTOP_SETUP.md         # a laptop joining the cluster, no Docker (Phase 4.1)
     ├── LAPTOP_HANDOFF.md       # the same, as instructions for an AI agent
     └── NETWORK_SETUP.md        # written in Phase 4.1
@@ -294,7 +294,7 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 **Goal:** a working Python environment on the 36 GB Mac, the Granite model downloaded, and "golden" reference outputs from plain, unchanged Transformers that every later step is compared to.
 
 **What gets built:**
-- `requirements.txt` (Python 3.12, pinned `torch`, `transformers==5.20.1`, `safetensors`, `fastapi`, `uvicorn`, `httpx`, `pydantic-settings`, `typer`, `pytest`) and a `.venv` in the repo, set up as described in [SETUP.md](SETUP.md) (uv or pip).
+- `requirements.txt` (Python 3.12, pinned `torch`, `transformers==5.20.1`, `safetensors`, `fastapi`, `uvicorn`, `httpx`, `pydantic-settings`, `typer`, `pytest`) and a `.venv` in the repo, set up as described in SETUP.md at the time (uv or pip; now [DOCKER_SETUP.md](DOCKER_SETUP.md) section 6 and `scripts/install.sh`).
 - `scripts/prompts.json`: ~10 fixed prompts (short, long, a list, code, a number question, a non-English one).
 - `scripts/make_golden.py`: runs each prompt through plain Transformers with greedy decoding (always pick the most likely token), 64 new tokens, and saves the tokens and the first-step scores ("logits") to `tests/golden/<model>/<dtype>.json`.
 
@@ -474,7 +474,7 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
   - **One-token expert work is 2-15× slower inside Docker's VM than on macOS directly** (3 experts, 1 token: 0.23-0.40 ms on macOS; 2-5.5 ms in the VM with 1-4 threads, 0.7-3.5 ms with 12). For one token this work is mostly reading weights from memory, and inside the VM a single thread reads at only ~4 GB/s (macOS: ~55 GB/s).
   - So **the thread setting barely matters** (master/workers 4/2: 1.93 tok/s, 6/3: 1.82, 8/4: 1.84, 12/12: 1.78). The plan's idea "fewer threads per container so they don't fight" doesn't help on Docker Desktop for Mac. Default kept at 4/2.
   - This is a property of Docker Desktop's VM on a Mac, not of our code. On a Linux laptop Docker runs without a VM; to be measured in Phase 4. Phase 3's logs will show the per-layer timings live.
-- **Company network:** this Mac's internet goes through Zscaler, a security filter that re-signs HTTPS connections with its own certificate. Containers don't trust that certificate, so `pip` and the model download failed (`CERTIFICATE_VERIFY_FAILED`). Fix: `docker/certs/` holds optional extra certificates (git-ignored); the image trusts them, both in the system list (pip) and in Python's `certifi` list (Hugging Face). Certificate checks stay on. Checked both ways: **without a certificate** (other laptops) the build works and nothing changes; **with it** (this Mac) Hugging Face and PyTorch's servers are reachable. How-to: `docker/certs/README.md`, SETUP.md section 8.
+- **Company network:** this Mac's internet goes through Zscaler, a security filter that re-signs HTTPS connections with its own certificate. Containers don't trust that certificate, so `pip` and the model download failed (`CERTIFICATE_VERIFY_FAILED`). Fix: `docker/certs/` holds optional extra certificates (git-ignored); the image trusts them, both in the system list (pip) and in Python's `certifi` list (Hugging Face). Certificate checks stay on. Checked both ways: **without a certificate** (other laptops) the build works and nothing changes; **with it** (this Mac) Hugging Face and PyTorch's servers are reachable. How-to: `docker/certs/README.md`, [DOCKER_SETUP.md](DOCKER_SETUP.md) section 1.
 - **Open for Phase 2.2:** if a worker restarts after the master has checked it, the master doesn't notice until a call fails (seen once while restarting containers during the speed tests). Registration, heartbeats and health states (2.2) handle this.
 - Tests: 177 pass + 1 expected failure on this machine (`-m "not cluster"`, ~6 min; 138 quick ones in ~14 s), and 2 cluster tests per number format against Docker (~5 min each).
 
@@ -545,7 +545,7 @@ Each phase lists: **Goal**, **What gets built**, **Key decisions**, **How to tes
 - **Checked:**
   - `tests/test_openai_api.py` (15 tests, a master + one worker in the test process): official `openai` client, non-streaming and streaming; temperature 0 → **same text and token counts as the golden files**; streaming gives the same text in many small pieces; raw SSE lines arrive spread over time and end with `data: [DONE]`; stop texts; `max_tokens` → `finish_reason: "length"`; same seed → same sampled text, other seed → other text; error formats; 3 requests at once all get the right answers, one after the other; a client leaving frees the master; a worker failing mid-stream keeps the text and ends with an error.
   - **Against Docker:** `curl -N` shows the pieces arriving over ~4 s, then `data: [DONE]`; the `openai` client gives text identical to the Linux golden files (2 prompts) and streams.
-  - **Open WebUI works:** started next to the cluster (memory capped at 1.5 GB, it used ~1 GB), it lists our model from `/v1/models` and a chat through it (`Name three colors.`) streamed back `Blue, green, and red.` in 7 pieces, answered by the cluster (master log: `request ... done: 8 tokens`). Login and the extra features that would send more requests or download models were turned off; the command is in SETUP.md section 8. **Phase 2.3 is done.**
+  - **Open WebUI works:** started next to the cluster (memory capped at 1.5 GB, it used ~1 GB), it lists our model from `/v1/models` and a chat through it (`Name three colors.`) streamed back `Blue, green, and red.` in 7 pieces, answered by the cluster (master log: `request ... done: 8 tokens`). Login and the extra features that would send more requests or download models were turned off; the command is in [DOCKER_SETUP.md](DOCKER_SETUP.md) section 4. **Phase 2.3 is done.**
 
 #### Phase 2.4 — The 8 GB memory check
 
@@ -706,13 +706,13 @@ Example output (`LOG_LEVEL=debug`, `LOG_FORMAT=pretty`):
 **Goal:** the same tokens as Step 2, now across real machines.
 
 **Setup (example, Granite bf16):**
-- Master (36 GB Mac): shared parts + experts `0-15`
-- Laptop C (Mac): `16-25`
-- Laptop A (8 GB): `26-31` (fewer experts)
+- Master (Laptop B, 36 GB Mac): shared parts + experts `0-10`
+- Laptop A (36 GB Mac): `11-21`
+- Laptop C (36 GB Mac): `22-31`
 
 ```bash
 # on each laptop (docs/LAPTOP_SETUP.md): once
-./scripts/install.sh && ./moe setup        # e.g. worker, master 192.168.1.10, experts 26-31
+./scripts/install.sh && ./moe setup        # e.g. worker, master 192.168.1.10, experts 22-31
 # then every time
 ./moe serve      # master
 ./moe join       # workers
@@ -732,7 +732,7 @@ Example output (`LOG_LEVEL=debug`, `LOG_FORMAT=pretty`):
 
 **What gets built (each one switched on separately and benchmarked):**
 1. `COMBINE_MODE=fast` vs `exact`: compare speed and token differences.
-2. `scripts/expert_usage.py`: counts how often each (layer, expert) is picked over a set of prompts, and writes a suggested `EXPERT_MAP` that puts the most-used experts on the master and gives the 8 GB laptop the least-used ones. The UI's grid can show usage as a heat map.
+2. `scripts/expert_usage.py`: counts how often each (layer, expert) is picked over a set of prompts, and writes a suggested `EXPERT_MAP` that puts the most-used experts on the master and gives the slowest laptop the least-used ones. The UI's grid can show usage as a heat map.
 3. Per-layer placement (`EXPERT_MAP`) support in the loader, placement and registration.
 4. **Skip a node entirely when none of its experts were picked** for that layer (already the case, but measured and shown: "calls skipped").
 
@@ -756,7 +756,7 @@ Follow [AVAILABLE_MODELS.md section 6.3](AVAILABLE_MODELS.md): write the `qwen2_
 
 #### Phase 4.6 — Stretch: Qwen3-30B-A3B
 
-Follow [AVAILABLE_MODELS.md section 6.4](AVAILABLE_MODELS.md): int8 expert weights → per-node weight files → `qwen3_moe` adapter → tests → laptops. Only if Laptop C has 16 GB or more.
+Follow [AVAILABLE_MODELS.md section 6.4](AVAILABLE_MODELS.md): int8 expert weights → per-node weight files → `qwen3_moe` adapter → tests → laptops. Memory is fine across three 36 GB Macs (~21 GB each in bf16); disk space is the limit.
 
 #### Phase 4.7 — Optional comparison
 
