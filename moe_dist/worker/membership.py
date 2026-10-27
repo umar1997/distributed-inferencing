@@ -71,7 +71,8 @@ class Membership:
         self.problem: str | None = None  # the current problem, logged once
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="membership", daemon=True)
-        self._http = httpx.Client(base_url=self.master, headers=auth_headers(settings.cluster_token), timeout=5)
+        self._http = httpx.Client(base_url=self.master, headers=auth_headers(settings.cluster_token), timeout=5,
+                                  trust_env=False)  # no proxy for cluster traffic (transport/client.py)
 
     @property
     def registered(self) -> bool:

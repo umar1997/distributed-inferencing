@@ -149,9 +149,9 @@ def run(env_path: Path | None = None, yes: bool = False, download: bool = True, 
                 return "type the master's IP address, e.g. 192.168.1.10"
             url = http_url(answer if ":" in answer.split("://")[-1] else f"{answer}:8000")
             try:
-                health = httpx.get(f"{url}/health", timeout=5).raise_for_status().json()
+                health = httpx.get(f"{url}/health", timeout=5, trust_env=False).raise_for_status().json()
             except httpx.HTTPError as exc:
-                return (f"cannot reach the master at {url} ({type(exc).__name__}). Is it running (`./moe serve`)? "
+                return (f"cannot reach the master at {url} ({type(exc).__name__}: {exc}). Is it running (`./moe serve`)? "
                         "Are both laptops on the same Wi-Fi? See 'Troubleshooting' in docs/LAPTOP_SETUP.md")
             return None
 
@@ -177,7 +177,7 @@ def run(env_path: Path | None = None, yes: bool = False, download: bool = True, 
                 return "type the token shown when the master was set up (it is in the master's node.env)"
             try:
                 r = httpx.post(f"{http_url(values['MASTER_ADDR'])}/internal/heartbeat", json={"node_id": "setup-check"},
-                               headers=auth_headers(answer), timeout=5)
+                               headers=auth_headers(answer), timeout=5, trust_env=False)
             except httpx.HTTPError as exc:
                 return f"could not check the token: {exc}"
             return "the master says this token is wrong" if r.status_code == 401 else None
@@ -237,7 +237,7 @@ def run(env_path: Path | None = None, yes: bool = False, download: bool = True, 
                 typer.echo(f"    {'this master' if i == 0 else f'worker {i}':12} experts {format_expert_ids(share)}")
     else:
         try:
-            nodes = httpx.get(f"{http_url(values['MASTER_ADDR'])}/api/nodes", timeout=5).raise_for_status().json()
+            nodes = httpx.get(f"{http_url(values['MASTER_ADDR'])}/api/nodes", timeout=5, trust_env=False).raise_for_status().json()
             free = free_experts(nodes["nodes"], num_experts, values["NODE_ID"])
         except httpx.HTTPError:
             free = every

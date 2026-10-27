@@ -38,7 +38,9 @@ class RemoteNode:
         self.base_url = base_url.rstrip("/")
         self.retries = retries
         self.calls = 0
-        self._http = httpx.Client(base_url=self.base_url, headers=auth_headers(token), timeout=timeout_s)
+        # trust_env=False: never send cluster traffic through a proxy from the laptop's settings (a company
+        # proxy cannot reach other laptops on the local network).
+        self._http = httpx.Client(base_url=self.base_url, headers=auth_headers(token), timeout=timeout_s, trust_env=False)
 
     def forward(self, message: bytes) -> bytes:
         for attempt in range(self.retries + 1):

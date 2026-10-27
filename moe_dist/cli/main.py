@@ -96,7 +96,7 @@ def status(master: str = typer.Option("", help="The master's address (default: M
     """
     url = http_url(master or Settings().master_addr or "localhost:8000")
     try:
-        answer = httpx.get(f"{url}/api/nodes", timeout=5).raise_for_status().json()
+        answer = httpx.get(f"{url}/api/nodes", timeout=5, trust_env=False).raise_for_status().json()
     except httpx.HTTPError as exc:
         typer.echo(f"cannot reach the master at {url}: {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(1)
@@ -126,7 +126,7 @@ def leave(port: int = typer.Option(0, help="This worker's port (default: LISTEN_
     s = Settings()
     url = f"http://127.0.0.1:{port or s.listen_port}/internal/leave"
     try:
-        answer = httpx.post(url, headers=auth_headers(s.cluster_token), timeout=10).raise_for_status().json()
+        answer = httpx.post(url, headers=auth_headers(s.cluster_token), timeout=10, trust_env=False).raise_for_status().json()
     except httpx.HTTPError as exc:
         typer.echo(f"could not ask the worker at {url} to leave: {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(1)

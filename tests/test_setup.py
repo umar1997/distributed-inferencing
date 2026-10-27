@@ -63,7 +63,7 @@ class FakeMaster:
         self.token = token
         self.nodes = nodes or [{"node_id": "master", "status": "healthy", "experts": {"all_layers": list(range(11))}}]
 
-    def get(self, url, timeout=None):
+    def get(self, url, timeout=None, trust_env=True):
         if url.endswith("/health"):
             body = {"node_id": "master", "model_id": DEFAULT_MODEL, "model_revision": pinned_revision(DEFAULT_MODEL),
                     "dtype": "bf16", "loaded": True}
@@ -71,7 +71,7 @@ class FakeMaster:
             body = {"nodes": self.nodes}
         return httpx.Response(200, json=body, request=httpx.Request("GET", url))
 
-    def post(self, url, json=None, headers=None, timeout=None):
+    def post(self, url, json=None, headers=None, timeout=None, trust_env=True):
         ok = headers.get("Authorization") == f"Bearer {self.token}"
         return httpx.Response(200 if ok else 401, json={}, request=httpx.Request("POST", url))
 
@@ -113,7 +113,7 @@ def test_worker_setup_refuses_a_wrong_token(tmp_path, fake_master):
 
 
 def test_worker_setup_says_clearly_when_the_master_is_unreachable(tmp_path, monkeypatch):
-    def unreachable(url, timeout=None):
+    def unreachable(url, timeout=None, trust_env=True):
         raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr(wizard.httpx, "get", unreachable)
